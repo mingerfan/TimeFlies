@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "timeflies",
+  "productName": "TimeFlies",
   "version": "0.1.0",
   "identifier": "com.xumin.timeflies",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "timeflies",
+        "title": "TimeFlies",
         "width": 800,
         "height": 600
       }

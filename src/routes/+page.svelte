@@ -1,33 +1,49 @@
 <script lang="ts">
   import {
     addTagToTask,
+    archiveTask,
     createTask,
     getOverview,
     insertSubtaskAndStart,
     pauseTask,
-    ping,
     removeTagFromTask,
+    renameTask,
+    reparentTask,
     resumeTask,
     startTask,
     stopTask,
-    type OverviewRange,
     type OverviewResponse,
     type TaskRecord,
-    type TaskStatus,
   } from "$lib/api";
+  import {
+    buildTaskChain,
+    formatClock,
+    formatDate,
+    formatSeconds,
+    normalizeError,
+    statusLabel,
+  } from "$lib/ui";
+  import { onMount } from "svelte";
 
-  type FlatTask = { task: TaskRecord; depth: number };
+  type MiniNodeKind = "ancestor" | "current" | "child" | "root";
+  type MiniNode = {
+    task: TaskRecord;
+    depth: number;
+    kind: MiniNodeKind;
+  };
+
+  const ROOT_PARENT_VALUE = "__ROOT__";
 
   let overview = $state<OverviewResponse | null>(null);
-  let range = $state<OverviewRange>("week");
   let selectedTaskId = $state<string | null>(null);
   let loading = $state(false);
   let currentAction = $state("");
   let errorMessage = $state("");
-  let pingResult = $state("");
+  let nowTs = $state(Math.floor(Date.now() / 1000));
 
-  let createTitle = $state("");
-  let createAsChild = $state(false);
+  let quickAddTitle = $state("");
+  let renameTitle = $state("");
+  let reparentTarget = $state(ROOT_PARENT_VALUE);
   let subtaskTitle = $state("");
   let newTagName = $state("");
 
@@ -59,46 +75,126 @@
       .sort((a, b) => a.created_at - b.created_at)
   );
 
-  const flatTasks = $derived.by(() => {
-    const rows: FlatTask[] = [];
-    const visit = (task: TaskRecord, depth: number) => {
-      rows.push({ task, depth });
-      for (const child of childrenByParent.get(task.id) ?? []) {
-        visit(child, depth + 1);
-      }
-    };
-    for (const rootTask of rootTasks) {
-      visit(rootTask, 0);
-    }
-    return rows;
-  });
-
   const selectedTask = $derived.by(() =>
     selectedTaskId ? (taskMap.get(selectedTaskId) ?? null) : null
   );
 
-  const topByExclusive = $derived.by(() =>
-    [...(overview?.tasks ?? [])]
-      .sort((a, b) => b.exclusive_seconds - a.exclusive_seconds)
-      .slice(0, 5)
+  const activeTask = $derived.by(() =>
+    overview?.active_task_id ? (taskMap.get(overview.active_task_id) ?? null) : null
   );
 
-  $effect(() => {
-    const selectedRange = range;
-    void refresh(selectedRange);
+  const selectedTaskPath = $derived.by(() =>
+    buildTaskChain(selectedTask?.id ?? null, taskMap)
+      .map((task) => task.title)
+      .join(" / ")
+  );
+
+  const blockedParentIds = $derived.by(() => {
+    const blocked = new Set<string>();
+    if (!selectedTask) return blocked;
+    const stack: string[] = [selectedTask.id];
+    while (stack.length > 0) {
+      const id = stack.pop();
+      if (!id || blocked.has(id)) continue;
+      blocked.add(id);
+      for (const child of childrenByParent.get(id) ?? []) {
+        stack.push(child.id);
+      }
+    }
+    return blocked;
   });
 
-  async function refresh(targetRange: OverviewRange = range) {
+  const reparentCandidates = $derived.by(() =>
+    (overview?.tasks ?? [])
+      .filter((task) => !blockedParentIds.has(task.id))
+      .sort((a, b) => a.created_at - b.created_at)
+  );
+
+  const miniNodes = $derived.by(() => {
+    const nodes: MiniNode[] = [];
+    if (selectedTask) {
+      const chain = buildTaskChain(selectedTask.id, taskMap);
+      chain.forEach((task, index) => {
+        nodes.push({
+          task,
+          depth: index,
+          kind: index === chain.length - 1 ? "current" : "ancestor",
+        });
+      });
+
+      const children = (childrenByParent.get(selectedTask.id) ?? []).slice(0, 10);
+      for (const child of children) {
+        nodes.push({
+          task: child,
+          depth: chain.length,
+          kind: "child",
+        });
+      }
+      return nodes;
+    }
+
+    for (const root of rootTasks.slice(0, 12)) {
+      nodes.push({
+        task: root,
+        depth: 0,
+        kind: "root",
+      });
+    }
+    return nodes;
+  });
+
+  const selectedElapsedSeconds = $derived.by(() => {
+    const task = selectedTask;
+    if (!task) return 0;
+    const delta =
+      activeTask && activeTask.id === task.id && activeTask.status === "running" && overview
+        ? Math.max(0, nowTs - overview.generated_at)
+        : 0;
+    return task.exclusive_seconds + delta;
+  });
+
+  const activeElapsedSeconds = $derived.by(() => {
+    if (!activeTask) return 0;
+    if (activeTask.status !== "running" || !overview) {
+      return activeTask.exclusive_seconds;
+    }
+    return activeTask.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
+
+  onMount(() => {
+    void refresh();
+    const ticker = window.setInterval(() => {
+      nowTs = Math.floor(Date.now() / 1000);
+    }, 1_000);
+    const poller = window.setInterval(() => void refresh(), 30_000);
+    return () => {
+      window.clearInterval(ticker);
+      window.clearInterval(poller);
+    };
+  });
+
+  $effect(() => {
+    const task = selectedTask;
+    if (!task) {
+      renameTitle = "";
+      reparentTarget = ROOT_PARENT_VALUE;
+      return;
+    }
+    renameTitle = task.title;
+    reparentTarget = task.parent_id ?? ROOT_PARENT_VALUE;
+  });
+
+  async function refresh() {
     loading = true;
     errorMessage = "";
     try {
-      const snapshot = await getOverview(targetRange);
+      const snapshot = await getOverview("week");
       overview = snapshot;
       if (selectedTaskId && !snapshot.tasks.some((task) => task.id === selectedTaskId)) {
         selectedTaskId = null;
       }
-      if (!selectedTaskId && snapshot.tasks.length > 0) {
-        selectedTaskId = snapshot.tasks[0].id;
+      if (!selectedTaskId) {
+        selectedTaskId = snapshot.active_task_id ?? snapshot.tasks[0]?.id ?? null;
       }
     } catch (error) {
       errorMessage = normalizeError(error);
@@ -122,16 +218,134 @@
     }
   }
 
+  async function ensureSwitchFromActive(targetTaskId: string): Promise<boolean> {
+    const active = activeTask;
+    if (!active || active.status !== "running" || active.id === targetTaskId) {
+      return true;
+    }
+    const paused = await runAction("暂停当前任务", () => pauseTask(active.id));
+    return paused !== null;
+  }
+
+  async function onPrimaryToggle() {
+    if (!selectedTask) return;
+    const task = selectedTask;
+    if (task.status === "running") {
+      await runAction("暂停任务", () => pauseTask(task.id));
+      return;
+    }
+
+    if (!(await ensureSwitchFromActive(task.id))) return;
+    if (task.status === "paused") {
+      await runAction("恢复任务", () => resumeTask(task.id));
+      return;
+    }
+    await runAction("开始任务", () => startTask(task.id));
+  }
+
+  async function onStopSelected() {
+    if (!selectedTask) return;
+    if (selectedTask.status !== "running" && selectedTask.status !== "paused") return;
+    await runAction("停止任务", () => stopTask(selectedTask.id));
+  }
+
+  function nodeActionSymbol(task: TaskRecord): string {
+    return task.status === "running" ? "⏸" : "▶";
+  }
+
+  function nodeActionLabel(task: TaskRecord): string {
+    if (task.status === "running") return "暂停任务";
+    if (task.status === "paused") return "恢复任务";
+    return "开始任务";
+  }
+
+  async function onMiniNodeToggle(event: MouseEvent, task: TaskRecord) {
+    event.stopPropagation();
+    selectedTaskId = task.id;
+
+    if (task.status === "running") {
+      await runAction("暂停任务", () => pauseTask(task.id));
+      return;
+    }
+
+    if (!(await ensureSwitchFromActive(task.id))) return;
+    if (task.status === "paused") {
+      await runAction("恢复任务", () => resumeTask(task.id));
+      return;
+    }
+
+    await runAction("开始任务", () => startTask(task.id));
+  }
+
   async function onCreateTask(event: SubmitEvent) {
     event.preventDefault();
-    const title = createTitle.trim();
+    const title = quickAddTitle.trim();
     if (!title) return;
-    const parentId = createAsChild ? selectedTaskId : null;
-    const taskId = await runAction("创建任务", () => createTask(title, parentId));
-    createTitle = "";
-    if (taskId) {
-      selectedTaskId = taskId;
+
+    const parentId = selectedTaskId;
+    const createdTaskId = await runAction("快速创建任务", () => createTask(title, parentId));
+    if (!createdTaskId) return;
+
+    selectedTaskId = createdTaskId;
+    quickAddTitle = "";
+  }
+
+  async function onCreateTaskAndStart() {
+    const title = quickAddTitle.trim();
+    if (!title) return;
+
+    if (selectedTask?.status === "running") {
+      const childId = await runAction("插入子任务", () =>
+        insertSubtaskAndStart(selectedTask.id, title)
+      );
+      if (!childId) return;
+      selectedTaskId = childId;
+      quickAddTitle = "";
+      return;
     }
+
+    const parentId = selectedTaskId;
+    const createdTaskId = await runAction("快速创建任务", () => createTask(title, parentId));
+    if (!createdTaskId) return;
+    selectedTaskId = createdTaskId;
+    quickAddTitle = "";
+
+    if (!(await ensureSwitchFromActive(createdTaskId))) return;
+    await runAction("开始任务", () => startTask(createdTaskId));
+  }
+
+  function onQuickAddKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      quickAddTitle = "";
+      return;
+    }
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void onCreateTaskAndStart();
+    }
+  }
+
+  async function onRenameTask(event: SubmitEvent) {
+    event.preventDefault();
+    if (!selectedTask) return;
+    const title = renameTitle.trim();
+    if (!title) return;
+    await runAction("重命名任务", () => renameTask(selectedTask.id, title));
+  }
+
+  async function onReparentTask(event: SubmitEvent) {
+    event.preventDefault();
+    if (!selectedTask) return;
+    const targetParentId = reparentTarget === ROOT_PARENT_VALUE ? null : reparentTarget;
+    if (targetParentId === selectedTask.parent_id) return;
+    await runAction("调整父任务", () => reparentTask(selectedTask.id, targetParentId));
+  }
+
+  async function onArchiveTask() {
+    if (!selectedTask) return;
+    const confirmed = window.confirm(`确认归档任务「${selectedTask.title}」及其全部子任务吗？`);
+    if (!confirmed) return;
+    await runAction("归档任务", () => archiveTask(selectedTask.id));
   }
 
   async function onInsertSubtask(event: SubmitEvent) {
@@ -140,10 +354,9 @@
     const title = subtaskTitle.trim();
     if (!title) return;
     const taskId = await runAction("插入子任务", () => insertSubtaskAndStart(selectedTask.id, title));
+    if (!taskId) return;
     subtaskTitle = "";
-    if (taskId) {
-      selectedTaskId = taskId;
-    }
+    selectedTaskId = taskId;
   }
 
   async function onAddTag(event: SubmitEvent) {
@@ -159,542 +372,589 @@
     if (!selectedTask) return;
     await runAction("删除标签", () => removeTagFromTask(selectedTask.id, tagName));
   }
-
-  async function testPing() {
-    pingResult = "";
-    const result = await runAction("连接测试", () => ping());
-    if (result) {
-      pingResult = result;
-    }
-  }
-
-  function statusLabel(status: TaskStatus): string {
-    switch (status) {
-      case "idle":
-        return "待开始";
-      case "running":
-        return "进行中";
-      case "paused":
-        return "已暂停";
-      case "stopped":
-        return "已停止";
-      default:
-        return status;
-    }
-  }
-
-  function formatSeconds(input: number): string {
-    const seconds = Math.max(0, Math.floor(input));
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    if (h > 0) return `${h}h ${m}m ${s}s`;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
-  }
-
-  function formatDate(unixSeconds: number): string {
-    return new Date(unixSeconds * 1000).toLocaleString();
-  }
-
-  function normalizeError(error: unknown): string {
-    if (typeof error === "string") return error;
-    if (error && typeof error === "object" && "message" in error) {
-      return String((error as { message: string }).message);
-    }
-    return "发生未知错误";
-  }
 </script>
 
-<main class="screen">
-  <header class="header">
+<main class="detail-screen">
+  <header class="hero">
     <div>
-      <p class="eyebrow">TimeFiles · MVP Slice</p>
-      <h1>任务树计时台</h1>
-      <p class="sub">按 PRD/MVP/ADR 落地：单活动上下文、事件日志、父子任务自动切换</p>
-    </div>
-    <div class="header-actions">
-      <button class="secondary" type="button" onclick={testPing} disabled={!!currentAction}>
-        {currentAction === "连接测试" ? "测试中..." : "Rust Ping"}
-      </button>
-      {#if pingResult}
-        <span class="pill">IPC: {pingResult}</span>
+      <p class="eyebrow">主工作台</p>
+      {#if selectedTask}
+        <h1>{selectedTask.title}</h1>
+        <p class="hero-meta">路径 {selectedTaskPath || "-"} · {statusLabel(selectedTask.status)}</p>
+        <p class="hero-time">当前任务已用 {formatClock(selectedElapsedSeconds)}</p>
+      {:else}
+        <h1>任务详情</h1>
+        <p class="hero-meta">请在右侧 mini 任务树里选择一个任务</p>
       {/if}
     </div>
-  </header>
-
-  <section class="toolbar">
-    <div class="range-switch">
-      <button type="button" class:active={range === "all"} onclick={() => (range = "all")}>全部</button>
-      <button type="button" class:active={range === "week"} onclick={() => (range = "week")}>近 7 天</button>
-      <button type="button" class:active={range === "day"} onclick={() => (range = "day")}>近 24 小时</button>
+    <div class="hero-actions">
+      <a href="/tree" class="ghost-link">打开任务树工作区</a>
+      <button type="button" class="secondary" onclick={refresh} disabled={loading || !!currentAction}>
+        {loading ? "刷新中..." : "刷新"}
+      </button>
+      <button type="button" onclick={onPrimaryToggle} disabled={!selectedTask || !!currentAction}>
+        {selectedTask?.status === "running"
+          ? "暂停"
+          : selectedTask?.status === "paused"
+            ? "恢复"
+            : "开始"}
+      </button>
+      <button
+        type="button"
+        class="danger"
+        onclick={onStopSelected}
+        disabled={!selectedTask || !!currentAction}
+      >
+        停止
+      </button>
     </div>
-
-    <form class="create-form" onsubmit={onCreateTask}>
-      <input
-        type="text"
-        placeholder="新任务标题"
-        bind:value={createTitle}
-        disabled={loading || !!currentAction}
-      />
-      <label>
-        <input type="checkbox" bind:checked={createAsChild} disabled={!selectedTaskId} />
-        作为当前选中任务的子任务
-      </label>
-      <button type="submit" disabled={loading || !!currentAction}>创建</button>
-    </form>
-  </section>
+  </header>
 
   {#if errorMessage}
     <p class="error">{errorMessage}</p>
   {/if}
 
-  <section class="grid">
-    <article class="panel">
-      <div class="panel-title">
-        <h2>任务树</h2>
-        {#if overview}
-          <span>{overview.tasks.length} 项</span>
-        {/if}
-      </div>
-
-      {#if !overview || overview.tasks.length === 0}
-        <p class="empty">当前暂无任务，先创建一个主任务开始计时。</p>
-      {:else}
-        <ul class="task-list">
-          {#each flatTasks as item (item.task.id)}
-            <li>
-              <button
-                class="task-row"
-                class:selected={selectedTaskId === item.task.id}
-                style={`--depth:${item.depth}`}
-                type="button"
-                onclick={() => (selectedTaskId = item.task.id)}
-              >
-                <span class="title">{item.task.title}</span>
-                <span class="status">{statusLabel(item.task.status)}</span>
-                <span class="time">
-                  Ex: {formatSeconds(item.task.exclusive_seconds)} · In: {formatSeconds(item.task.inclusive_seconds)}
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </article>
-
-    <article class="panel">
-      <div class="panel-title">
-        <h2>任务详情</h2>
-        {#if overview?.active_task_id}
-          <span class="pill">活动任务: {overview.active_task_id.slice(0, 8)}</span>
-        {/if}
-      </div>
-
+  <section class="content-grid">
+    <article class="panel detail-main">
       {#if selectedTask}
-        <div class="detail-block">
+        <section class="detail-top">
           <p class="detail-title">{selectedTask.title}</p>
-          <p class="meta">创建于 {formatDate(selectedTask.created_at)} · 状态 {statusLabel(selectedTask.status)}</p>
+          <p class="meta">
+            创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(selectedTask.exclusive_seconds)} · In
+            {formatSeconds(selectedTask.inclusive_seconds)}
+          </p>
+        </section>
 
-          <div class="actions">
-            <button
-              type="button"
-              onclick={() => runAction("开始任务", () => startTask(selectedTask.id))}
-              disabled={!!currentAction || selectedTask.status === "running" || selectedTask.status === "paused"}
-            >
-              开始
-            </button>
-            <button
-              type="button"
-              onclick={() => runAction("暂停任务", () => pauseTask(selectedTask.id))}
-              disabled={!!currentAction || selectedTask.status !== "running"}
-            >
-              暂停
-            </button>
-            <button
-              type="button"
-              onclick={() => runAction("恢复任务", () => resumeTask(selectedTask.id))}
-              disabled={!!currentAction || selectedTask.status !== "paused"}
-            >
-              恢复
-            </button>
-            <button
-              type="button"
-              class="danger"
-              onclick={() => runAction("停止任务", () => stopTask(selectedTask.id))}
-              disabled={
-                !!currentAction ||
-                (selectedTask.status !== "running" && selectedTask.status !== "paused")
-              }
-            >
-              停止
-            </button>
-          </div>
-        </div>
+        <section class="detail-block">
+          <h2>结构与基础操作</h2>
+          <form class="inline-form" onsubmit={onRenameTask}>
+            <input type="text" bind:value={renameTitle} placeholder="任务名称" disabled={!!currentAction} />
+            <button type="submit" disabled={!!currentAction || !renameTitle.trim()}>重命名</button>
+          </form>
 
-        <div class="detail-block">
-          <h3>标签</h3>
+          <form class="inline-form" onsubmit={onReparentTask}>
+            <select bind:value={reparentTarget} disabled={!!currentAction}>
+              <option value={ROOT_PARENT_VALUE}>设为根任务</option>
+              {#each reparentCandidates as candidate (candidate.id)}
+                <option value={candidate.id}>{candidate.title}</option>
+              {/each}
+            </select>
+            <button type="submit" disabled={!!currentAction}>调整父任务</button>
+          </form>
+
+          <button type="button" class="subtle-danger" onclick={onArchiveTask} disabled={!!currentAction}>
+            归档当前任务子树
+          </button>
+        </section>
+
+        <section class="detail-block">
+          <h2>标签</h2>
           <div class="tags">
             {#if selectedTask.tags.length === 0}
               <span class="muted">暂无标签</span>
             {:else}
               {#each selectedTask.tags as tag}
-                <button class="tag" type="button" onclick={() => onRemoveTag(tag)} disabled={!!currentAction}>
-                  {tag} ×
+                <button type="button" class="tag" onclick={() => onRemoveTag(tag)} disabled={!!currentAction}>
+                  #{tag} ×
                 </button>
               {/each}
             {/if}
           </div>
           <form class="inline-form" onsubmit={onAddTag}>
-            <input type="text" placeholder="新标签" bind:value={newTagName} disabled={!!currentAction} />
-            <button type="submit" disabled={!!currentAction}>添加</button>
+            <input type="text" bind:value={newTagName} placeholder="新标签" disabled={!!currentAction} />
+            <button type="submit" disabled={!!currentAction || !newTagName.trim()}>添加标签</button>
           </form>
-        </div>
+        </section>
 
-        <div class="detail-block">
-          <h3>运行中插入子任务</h3>
+        <section class="detail-block">
+          <h2>运行中插入子任务</h2>
           <form class="inline-form" onsubmit={onInsertSubtask}>
             <input
               type="text"
-              placeholder="子任务标题"
               bind:value={subtaskTitle}
+              placeholder="子任务标题"
               disabled={selectedTask.status !== "running" || !!currentAction}
             />
-            <button type="submit" disabled={selectedTask.status !== "running" || !!currentAction}>
+            <button type="submit" disabled={selectedTask.status !== "running" || !!currentAction || !subtaskTitle.trim()}>
               插入并开始
             </button>
           </form>
-          <p class="muted">仅在父任务处于进行中时可用；执行后父任务会自动暂停。</p>
-        </div>
+        </section>
       {:else}
-        <p class="empty">从左侧任务树选择一个任务以操作。</p>
+        <section class="detail-top">
+          <p class="empty">暂无选中任务，可在右侧 mini 树选择或新建。</p>
+        </section>
       {/if}
+
+      <section class="quick-add">
+        <form class="quick-form" onsubmit={onCreateTask}>
+          <label for="quick-add-input">快速添加任务</label>
+          <input
+            id="quick-add-input"
+            type="text"
+            bind:value={quickAddTitle}
+            onkeydown={onQuickAddKeydown}
+            placeholder={selectedTaskId ? "默认创建为当前任务子任务" : "默认创建根任务"}
+            disabled={loading || !!currentAction}
+          />
+          <div class="quick-actions">
+            <button type="submit" disabled={loading || !!currentAction || !quickAddTitle.trim()}>
+              创建
+            </button>
+            <button
+              type="button"
+              class="secondary"
+              onclick={onCreateTaskAndStart}
+              disabled={loading || !!currentAction || !quickAddTitle.trim()}
+            >
+              创建并开始
+            </button>
+          </div>
+          <p class="hint">Enter 创建，Ctrl+Enter 创建并开始，Esc 清空。</p>
+        </form>
+      </section>
     </article>
 
-    <article class="panel">
-      <div class="panel-title">
-        <h2>统计摘要</h2>
-        {#if overview}
-          <span>{overview.range}</span>
+    <aside class="side-rail">
+      <article class="panel mini-timer">
+        <h2>Mini 计时器</h2>
+        {#if activeTask}
+          <p class="mini-title">{activeTask.title}</p>
+          <p class="mini-meta">{statusLabel(activeTask.status)}</p>
+          <p class="mini-clock">{formatClock(activeElapsedSeconds)}</p>
+        {:else}
+          <p class="empty">暂无进行中的任务</p>
         {/if}
-      </div>
+      </article>
 
-      {#if topByExclusive.length === 0}
-        <p class="empty">暂无统计数据</p>
-      {:else}
-        <ol class="stats">
-          {#each topByExclusive as task}
-            <li>
-              <span>{task.title}</span>
-              <span>Ex {formatSeconds(task.exclusive_seconds)} / In {formatSeconds(task.inclusive_seconds)}</span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-    </article>
+      <article class="panel mini-tree">
+        <div class="mini-tree-head">
+          <h2>Mini 任务树</h2>
+          <a href="/tree">完整树视图</a>
+        </div>
+        {#if miniNodes.length === 0}
+          <p class="empty">暂无任务</p>
+        {:else}
+          <ul class="mini-list">
+            {#each miniNodes as node (`${node.kind}-${node.task.id}`)}
+              <li>
+                <div
+                  class="mini-node-row"
+                  class:current={node.kind === "current"}
+                  style={`--depth:${node.depth}`}
+                >
+                  <button
+                    type="button"
+                    class="mini-node-main"
+                    onclick={() => (selectedTaskId = node.task.id)}
+                    title={`${node.task.title}\n${statusLabel(node.task.status)} · Ex ${formatSeconds(node.task.exclusive_seconds)}`}
+                  >
+                    <span class="mini-node-title">{node.task.title}</span>
+                    <span class="mini-node-sub">{statusLabel(node.task.status)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="mini-node-action"
+                    onclick={(event) => onMiniNodeToggle(event, node.task)}
+                    disabled={!!currentAction}
+                    title={nodeActionLabel(node.task)}
+                  >
+                    {nodeActionSymbol(node.task)}
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </article>
+    </aside>
   </section>
 </main>
 
 <style>
-  :global(body) {
-    margin: 0;
-    font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-    color: #102039;
-    background: radial-gradient(circle at 10% 10%, #f9f4e9 0%, #eaf0fa 45%, #d8e6f6 100%);
-  }
-
-  .screen {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 1.5rem;
+  .detail-screen {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.9rem;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
-  .header {
+  .hero {
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(65, 97, 143, 0.25);
+    border-radius: 1rem;
+    padding: 1rem 1.1rem;
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
     gap: 1rem;
+    flex-shrink: 0;
   }
 
   .eyebrow {
     margin: 0;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    font-size: 0.78rem;
-    color: #3f5d8b;
+    font-size: 0.72rem;
+    color: #4f688d;
   }
 
   h1 {
-    margin: 0.2rem 0;
-    font-size: clamp(1.8rem, 2.2vw, 2.4rem);
+    margin: 0.2rem 0 0.1rem;
+    font-size: clamp(1.6rem, 2.4vw, 2.3rem);
+    color: #102b4a;
   }
 
-  .sub {
+  .hero-meta {
     margin: 0;
-    color: #35506f;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-
-  .toolbar {
-    display: grid;
-    grid-template-columns: 240px 1fr;
-    gap: 1rem;
-  }
-
-  .range-switch {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    border-radius: 0.8rem;
-    overflow: hidden;
-    border: 1px solid #87a4cc;
-    background: #dce7f8;
-  }
-
-  .range-switch button {
-    border: none;
-    background: transparent;
-    padding: 0.7rem 0.4rem;
-    cursor: pointer;
-    color: #27456f;
-  }
-
-  .range-switch button.active {
-    background: #1e4f91;
-    color: #fff;
-  }
-
-  .create-form {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-  }
-
-  .create-form label {
-    display: inline-flex;
-    gap: 0.35rem;
-    align-items: center;
-    color: #38557a;
+    color: #415d82;
     font-size: 0.9rem;
   }
 
-  .grid {
+  .hero-time {
+    margin: 0.25rem 0 0;
+    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+    font-size: 1.05rem;
+    color: #143d67;
+  }
+
+  .hero-actions {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .ghost-link {
+    text-decoration: none;
+    color: #2d4f7d;
+    border: 1px solid #89a9d4;
+    border-radius: 0.62rem;
+    padding: 0.46rem 0.66rem;
+    background: #eff6ff;
+  }
+
+  .content-grid {
     display: grid;
-    grid-template-columns: 1.1fr 1fr 0.9fr;
+    grid-template-columns: minmax(0, 1fr) 340px;
     gap: 1rem;
+    align-items: start;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .panel {
     background: rgba(255, 255, 255, 0.88);
-    border: 1px solid rgba(67, 103, 150, 0.3);
+    border: 1px solid rgba(65, 97, 143, 0.28);
     border-radius: 1rem;
-    padding: 0.95rem;
+    padding: 0.9rem;
+  }
+
+  .detail-main {
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
-    min-height: 220px;
-  }
-
-  .panel-title {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  h3 {
-    margin: 0 0 0.4rem;
-    font-size: 0.94rem;
-  }
-
-  .task-list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    max-height: 510px;
+    min-height: 0;
     overflow: auto;
+    overscroll-behavior: contain;
   }
 
-  .task-row {
-    width: 100%;
-    text-align: left;
-    border-radius: 0.7rem;
-    border: 1px solid #cadbf4;
-    padding: 0.6rem 0.7rem;
-    padding-left: calc(0.75rem + (var(--depth) * 1.1rem));
-    background: #f6faff;
-    display: grid;
-    gap: 0.2rem;
-    cursor: pointer;
+  .detail-top,
+  .detail-block,
+  .quick-add {
+    border-top: 1px dashed #bfd2ef;
+    padding-top: 0.72rem;
   }
 
-  .task-row.selected {
-    border-color: #244b81;
-    background: #e4efff;
-  }
-
-  .task-row .title {
-    font-weight: 600;
-  }
-
-  .task-row .status,
-  .task-row .time {
-    font-size: 0.82rem;
-    color: #44678f;
-  }
-
-  .detail-title {
-    margin: 0;
-    font-size: 1.1rem;
-    font-weight: 700;
-  }
-
-  .detail-block {
-    border-top: 1px dashed #bfd0ea;
-    padding-top: 0.7rem;
-  }
-
-  .detail-block:first-of-type {
+  .detail-top {
     border-top: none;
     padding-top: 0;
   }
 
-  .meta,
-  .muted {
+  .detail-title {
     margin: 0;
-    color: #4e6d90;
-    font-size: 0.85rem;
+    font-size: 1.14rem;
+    font-weight: 700;
+    color: #0f2f54;
   }
 
-  .actions {
-    margin-top: 0.7rem;
+  h2 {
+    margin: 0 0 0.48rem;
+    font-size: 0.96rem;
+  }
+
+  .meta,
+  .muted,
+  .empty {
+    margin: 0;
+    color: #4d6c91;
+    font-size: 0.86rem;
+    line-height: 1.35;
+  }
+
+  .inline-form {
+    margin-top: 0.52rem;
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.44rem;
   }
 
   .tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    min-height: 1.8rem;
+    gap: 0.42rem;
   }
 
   .tag {
     border-radius: 999px;
-    border: 1px solid #8cb0df;
-    background: #e6f0ff;
-    padding: 0.25rem 0.55rem;
-    color: #1e4372;
-    cursor: pointer;
+    border: 1px solid #a3bedf;
+    background: #edf4ff;
+    color: #2b547f;
+    padding: 0.2rem 0.52rem;
   }
 
-  .inline-form {
-    margin-top: 0.55rem;
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .stats {
-    margin: 0;
-    padding-left: 1.1rem;
+  .quick-form {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 0.52rem;
   }
 
-  .stats li {
+  .quick-form label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #1f4672;
+  }
+
+  .quick-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: 0.77rem;
+    color: #4c6f96;
+  }
+
+  .side-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .mini-timer h2,
+  .mini-tree h2 {
+    margin: 0 0 0.4rem;
+    font-size: 0.95rem;
+  }
+
+  .mini-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #173b68;
+    line-height: 1.3;
+  }
+
+  .mini-clock {
+    margin: 0.2rem 0 0;
+    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+    font-size: 1.05rem;
+    color: #174371;
+  }
+
+  .mini-meta {
+    margin: 0;
+    color: #4b6b92;
+    font-size: 0.82rem;
+  }
+
+  .mini-tree-head {
     display: flex;
     justify-content: space-between;
-    gap: 0.8rem;
-    font-size: 0.9rem;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .mini-tree-head a {
+    font-size: 0.8rem;
+    color: #2f5688;
+    text-decoration: none;
+  }
+
+  .mini-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    max-height: 340px;
+    overflow: auto;
+  }
+
+  .mini-node-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.24rem;
+    align-items: center;
+    padding-left: calc(var(--depth) * 0.8rem);
+  }
+
+  .mini-node-main {
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 0.36rem;
+    background: transparent;
+    padding: 0.35rem 0.42rem;
+    color: #2f3437;
+  }
+
+  .mini-node-row:hover .mini-node-main,
+  .mini-node-row:focus-within .mini-node-main {
+    background: #f3f4f6;
+  }
+
+  .mini-node-row.current .mini-node-main {
+    background: #e7edf6;
+    color: #122a46;
+  }
+
+  .mini-node-title {
+    display: block;
+    font-size: 0.86rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mini-node-sub {
+    display: block;
+    margin-top: 0.06rem;
+    font-size: 0.72rem;
+    color: #6b7280;
+  }
+
+  .mini-node-action {
+    width: 1.34rem;
+    height: 1.34rem;
+    border: 1px solid #d0d7de;
+    border-radius: 0.3rem;
+    background: #fff;
+    color: #4b5563;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    font-size: 0.7rem;
+    line-height: 1;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  .mini-node-row:hover .mini-node-action,
+  .mini-node-row:focus-within .mini-node-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mini-node-action:disabled {
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   button,
-  input {
+  input,
+  select {
     font: inherit;
   }
 
-  input {
+  input,
+  select {
     min-width: 8rem;
-    border-radius: 0.6rem;
-    border: 1px solid #8eafd6;
-    padding: 0.52rem 0.62rem;
+    border-radius: 0.62rem;
+    border: 1px solid #8cafd7;
+    padding: 0.5rem 0.62rem;
     background: #fff;
   }
 
   button {
     border: 1px solid #2f629f;
-    border-radius: 0.6rem;
+    border-radius: 0.62rem;
     background: #2f629f;
     color: #fff;
-    padding: 0.52rem 0.78rem;
+    padding: 0.5rem 0.72rem;
     cursor: pointer;
   }
 
   button.secondary {
-    background: #f0f6ff;
-    color: #2f629f;
     border-color: #2f629f;
+    background: #f2f7ff;
+    color: #2f629f;
   }
 
   button.danger {
-    background: #8f2a2a;
-    border-color: #8f2a2a;
+    background: #8b2a2a;
+    border-color: #8b2a2a;
+  }
+
+  button.subtle-danger {
+    border-color: #c87373;
+    background: #ffecec;
+    color: #7f1f1f;
   }
 
   button:disabled,
-  input:disabled {
+  input:disabled,
+  select:disabled {
+    opacity: 0.56;
     cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .pill {
-    font-size: 0.78rem;
-    padding: 0.24rem 0.52rem;
-    border-radius: 999px;
-    border: 1px solid #91afd8;
-    background: #ecf4ff;
   }
 
   .error {
     margin: 0;
-    border: 1px solid #c06161;
-    background: #ffe9e9;
-    color: #7c1717;
-    border-radius: 0.7rem;
-    padding: 0.55rem 0.7rem;
+    border-radius: 0.72rem;
+    border: 1px solid #cb7474;
+    background: #ffeded;
+    color: #7f1a1a;
+    padding: 0.56rem 0.7rem;
   }
 
-  .empty {
-    margin: 0;
-    color: #526f95;
-    font-size: 0.92rem;
-  }
-
-  @media (max-width: 1080px) {
-    .grid {
-      grid-template-columns: 1fr;
+  @media (max-height: 700px) {
+    .detail-screen {
+      height: auto;
+      min-height: 100%;
+      overflow: visible;
     }
 
-    .toolbar {
+    .content-grid {
+      flex: 0 0 auto;
+      min-height: fit-content;
+      overflow: visible;
+    }
+
+    .detail-main,
+    .side-rail {
+      overflow: visible;
+    }
+  }
+
+  @media (max-width: 1180px) {
+    .content-grid {
       grid-template-columns: 1fr;
+      overflow: auto;
+    }
+
+    .hero {
+      flex-direction: column;
     }
   }
 </style>

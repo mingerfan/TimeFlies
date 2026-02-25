@@ -14,10 +14,24 @@ export interface TaskRecord {
   exclusive_seconds: number;
 }
 
+export interface RestSuggestionRecord {
+  id: number;
+  trigger_type: "subtask_end" | "task_switch";
+  task_id: string | null;
+  focus_seconds: number;
+  switch_count_30m: number;
+  deviation_ratio: number;
+  suggested_minutes: 0 | 3 | 8 | 15;
+  reasons: string[];
+  status: "pending" | "accepted" | "ignored";
+  created_at: number;
+}
+
 export interface OverviewResponse {
   range: OverviewRange;
   generated_at: number;
   active_task_id: string | null;
+  rest_suggestion: RestSuggestionRecord | null;
   tasks: TaskRecord[];
 }
 
@@ -33,6 +47,21 @@ export async function createTask(title: string, parentId?: string | null): Promi
   return invoke<string>("create_task", {
     title,
     parentId: parentId ?? null,
+  });
+}
+
+export async function renameTask(taskId: string, title: string): Promise<void> {
+  await invoke("rename_task", { taskId, title });
+}
+
+export async function archiveTask(taskId: string): Promise<void> {
+  await invoke("archive_task", { taskId });
+}
+
+export async function reparentTask(taskId: string, newParentId?: string | null): Promise<void> {
+  await invoke("reparent_task", {
+    taskId,
+    newParentId: newParentId ?? null,
   });
 }
 
@@ -62,4 +91,8 @@ export async function addTagToTask(taskId: string, tagName: string): Promise<voi
 
 export async function removeTagFromTask(taskId: string, tagName: string): Promise<void> {
   await invoke("remove_tag_from_task", { taskId, tagName });
+}
+
+export async function respondRestSuggestion(suggestionId: number, accept: boolean): Promise<void> {
+  await invoke("respond_rest_suggestion", { suggestionId, accept });
 }

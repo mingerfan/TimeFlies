@@ -20,13 +20,17 @@ pub fn run() {
             commands::ping,
             commands::get_overview,
             commands::create_task,
+            commands::rename_task,
+            commands::archive_task,
+            commands::reparent_task,
             commands::start_task,
             commands::pause_task,
             commands::resume_task,
             commands::stop_task,
             commands::insert_subtask_and_start,
             commands::add_tag_to_task,
-            commands::remove_tag_from_task
+            commands::remove_tag_from_task,
+            commands::respond_rest_suggestion
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

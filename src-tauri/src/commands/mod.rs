@@ -10,7 +10,10 @@ pub fn ping() -> String {
 }
 
 #[tauri::command]
-pub fn get_overview(state: State<'_, AppState>, range: Option<String>) -> AppResult<OverviewResponse> {
+pub fn get_overview(
+    state: State<'_, AppState>,
+    range: Option<String>,
+) -> AppResult<OverviewResponse> {
     let conn = state
         .db
         .lock()
@@ -29,6 +32,37 @@ pub fn create_task(
         .lock()
         .map_err(|_| "failed to lock database state".to_string())?;
     app::create_task(&mut conn, title, parent_id)
+}
+
+#[tauri::command]
+pub fn rename_task(state: State<'_, AppState>, task_id: String, title: String) -> AppResult<()> {
+    let mut conn = state
+        .db
+        .lock()
+        .map_err(|_| "failed to lock database state".to_string())?;
+    app::rename_task(&mut conn, task_id, title)
+}
+
+#[tauri::command]
+pub fn archive_task(state: State<'_, AppState>, task_id: String) -> AppResult<()> {
+    let mut conn = state
+        .db
+        .lock()
+        .map_err(|_| "failed to lock database state".to_string())?;
+    app::archive_task(&mut conn, task_id)
+}
+
+#[tauri::command]
+pub fn reparent_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    new_parent_id: Option<String>,
+) -> AppResult<()> {
+    let mut conn = state
+        .db
+        .lock()
+        .map_err(|_| "failed to lock database state".to_string())?;
+    app::reparent_task(&mut conn, task_id, new_parent_id)
 }
 
 #[tauri::command]
@@ -81,7 +115,11 @@ pub fn insert_subtask_and_start(
 }
 
 #[tauri::command]
-pub fn add_tag_to_task(state: State<'_, AppState>, task_id: String, tag_name: String) -> AppResult<()> {
+pub fn add_tag_to_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    tag_name: String,
+) -> AppResult<()> {
     let mut conn = state
         .db
         .lock()
@@ -100,4 +138,17 @@ pub fn remove_tag_from_task(
         .lock()
         .map_err(|_| "failed to lock database state".to_string())?;
     app::remove_tag_from_task(&mut conn, task_id, tag_name)
+}
+
+#[tauri::command]
+pub fn respond_rest_suggestion(
+    state: State<'_, AppState>,
+    suggestion_id: i64,
+    accept: bool,
+) -> AppResult<()> {
+    let mut conn = state
+        .db
+        .lock()
+        .map_err(|_| "failed to lock database state".to_string())?;
+    app::respond_rest_suggestion(&mut conn, suggestion_id, accept)
 }

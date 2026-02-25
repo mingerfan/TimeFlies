@@ -25,8 +25,12 @@ impl AppState {
         })?;
 
         let db_path = app_data_dir.join("timeflies.db");
-        let connection = Connection::open(&db_path)
-            .map_err(|error| format!("failed to open sqlite database {}: {error}", db_path.display()))?;
+        let connection = Connection::open(&db_path).map_err(|error| {
+            format!(
+                "failed to open sqlite database {}: {error}",
+                db_path.display()
+            )
+        })?;
 
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -95,6 +99,36 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
             ",
         )
         .map_err(|error| format!("failed to apply sqlite migration v1: {error}"))?;
+    }
+
+    if current_version < 2 {
+        connection
+            .execute_batch(
+                "
+                BEGIN;
+
+                CREATE TABLE IF NOT EXISTS rest_suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trigger_type TEXT NOT NULL CHECK(trigger_type IN ('subtask_end', 'task_switch')),
+                    task_id TEXT REFERENCES tasks(id),
+                    focus_seconds INTEGER NOT NULL,
+                    switch_count_30m INTEGER NOT NULL,
+                    deviation_ratio REAL NOT NULL,
+                    suggested_minutes INTEGER NOT NULL CHECK(suggested_minutes IN (0, 3, 8, 15)),
+                    reasons TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'ignored')),
+                    created_at INTEGER NOT NULL,
+                    responded_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_rest_suggestions_status_created_at
+                    ON rest_suggestions(status, created_at DESC, id DESC);
+
+                PRAGMA user_version = 2;
+
+                COMMIT;
+                ",
+            )
+            .map_err(|error| format!("failed to apply sqlite migration v2: {error}"))?;
     }
 
     Ok(())
