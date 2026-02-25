@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    APP_DATA_CHANGED_EVENT,
     getOverview,
     insertSubtaskAndStart,
     pauseTask,
@@ -74,11 +75,17 @@
 
   onMount(() => {
     void refresh();
+    const onDataChanged = () => {
+      if (loading || !!currentAction) return;
+      void refresh();
+    };
+    window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
     const poller = window.setInterval(() => void refresh(), 15_000);
     return () => {
+      window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
       window.clearInterval(ticker);
       window.clearInterval(poller);
     };
@@ -194,6 +201,25 @@
       respondRestSuggestion(suggestion.id, accept)
     );
   }
+
+  function recentTaskRootTitle(task: TaskRecord): string {
+    const chain = buildTaskChain(task.id, taskMap);
+    return chain[0]?.title ?? "";
+  }
+
+  function recentTaskMeta(task: TaskRecord): string {
+    const status = statusLabel(task.status);
+    const rootTitle = recentTaskRootTitle(task);
+    if (!rootTitle || rootTitle === task.title) return status;
+    return `${status} . ${rootTitle}`;
+  }
+
+  function recentTaskTooltip(task: TaskRecord): string {
+    const chainText = buildTaskChain(task.id, taskMap)
+      .map((node) => node.title)
+      .join(" / ");
+    return `${task.title}\n状态 ${statusLabel(task.status)} · Ex ${formatSeconds(task.exclusive_seconds)}\n路径 ${chainText}`;
+  }
 </script>
 
 <main class="timer-screen">
@@ -262,47 +288,47 @@
       {/if}
     </article>
 
-    <aside class="panel side-panel">
-      <div class="metric">
-        <p class="label">今日累计专注</p>
-        <p class="value">{formatSeconds(totalDaySeconds)}</p>
-      </div>
-      <div class="metric">
-        <p class="label">当前活动任务</p>
-        <p class="value small">{activeTask ? activeTask.title : "无"}</p>
-      </div>
+    <section class="side-column">
+      <aside class="panel side-panel metrics-panel">
+        <h2>专注时间</h2>
+        <div class="metric">
+          <p class="label">今日累计专注</p>
+          <p class="value">{formatSeconds(totalDaySeconds)}</p>
+        </div>
+        <div class="metric">
+          <p class="label">当前活动任务</p>
+          <p class="value small">{activeTask ? activeTask.title : "无"}</p>
+        </div>
+      </aside>
 
-      <h2>快速切换任务</h2>
-      {#if recentTasks.length === 0}
-        <p class="empty">暂无可切换任务</p>
-      {:else}
-        <ul class="recent-list">
-          {#each recentTasks as task (task.id)}
-            <li>
-              <button
-                type="button"
-                class="recent-btn"
-                class:selected={selectedTask?.id === task.id}
-                onclick={() => {
-                  selectedTaskId = task.id;
-                }}
-              >
-                <span>{task.title}</span>
-                <span>{statusLabel(task.status)}</span>
-              </button>
-              <button
-                type="button"
-                class="start-btn"
-                onclick={() => switchToTask(task)}
-                disabled={!!currentAction}
-              >
-                切换并开始
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </aside>
+      <aside class="panel side-panel switch-panel">
+        <h2>快速切换任务</h2>
+        {#if recentTasks.length === 0}
+          <p class="empty">暂无可切换任务</p>
+        {:else}
+          <ul class="recent-list">
+            {#each recentTasks as task (task.id)}
+              <li>
+                <button
+                  type="button"
+                  class="recent-btn"
+                  class:selected={selectedTask?.id === task.id}
+                  onclick={() => switchToTask(task)}
+                  disabled={!!currentAction}
+                  title={recentTaskTooltip(task)}
+                >
+                  <span class="recent-title-row">
+                    <span class="recent-title">{task.title}</span>
+                    <span class="recent-action">切换并开始</span>
+                  </span>
+                  <span class="recent-meta">{recentTaskMeta(task)}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </aside>
+    </section>
   </section>
 
   {#if restSuggestion}
@@ -372,6 +398,14 @@
     grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
     gap: 0.95rem;
     flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .side-column {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.95rem;
     min-height: 0;
     overflow: hidden;
   }
@@ -461,6 +495,13 @@
     overscroll-behavior: contain;
   }
 
+  .metrics-panel h2,
+  .switch-panel h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: #173c68;
+  }
+
   .metric {
     border: 1px solid #c7d8ee;
     background: #f7fbff;
@@ -486,11 +527,6 @@
     line-height: 1.3;
   }
 
-  .side-panel h2 {
-    margin: 0.15rem 0 0;
-    font-size: 1rem;
-  }
-
   .recent-list {
     margin: 0;
     padding: 0;
@@ -501,9 +537,7 @@
   }
 
   .recent-list li {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 0.4rem;
+    display: block;
   }
 
   .recent-btn {
@@ -513,8 +547,11 @@
     color: #1e3e67;
     border-radius: 0.64rem;
     padding: 0.45rem 0.55rem;
-    display: grid;
-    gap: 0.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    width: 100%;
+    transition: border-color 120ms ease, background 120ms ease;
   }
 
   .recent-btn.selected {
@@ -522,18 +559,39 @@
     background: #eaf2ff;
   }
 
-  .recent-btn span:last-child {
-    font-size: 0.8rem;
-    color: #4b6e96;
+  .recent-btn:hover,
+  .recent-btn:focus-visible {
+    border-color: #7598c8;
+    background: #f1f7ff;
   }
 
-  .start-btn {
-    border-radius: 0.62rem;
-    border: 1px solid #2f629f;
-    background: #2f629f;
-    color: #fff;
-    padding: 0.45rem 0.55rem;
+  .recent-title-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    align-items: baseline;
+  }
+
+  .recent-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: inherit;
+    min-width: 0;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .recent-action {
+    font-size: 0.78rem;
+    color: inherit;
+    white-space: nowrap;
+    opacity: 0.86;
+  }
+
+  .recent-meta {
+    font-size: 0.8rem;
+    color: #4b6e96;
   }
 
   .suggestion {
@@ -625,6 +683,11 @@
       flex: 0 0 auto;
       min-height: fit-content;
       overflow: visible;
+    }
+
+    .side-column {
+      overflow: visible;
+      grid-template-rows: auto auto;
     }
 
     .focus-panel,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    APP_DATA_CHANGED_EVENT,
     getOverview,
     respondRestSuggestion,
     type OverviewRange,
@@ -13,6 +14,7 @@
     restHeadline,
     restTriggerLabel,
   } from "$lib/ui";
+  import { onMount } from "svelte";
 
   let overview = $state<OverviewResponse | null>(null);
   let range = $state<OverviewRange>("week");
@@ -33,6 +35,17 @@
       .sort((a, b) => b.inclusive_seconds - a.inclusive_seconds)
       .slice(0, 10)
   );
+
+  onMount(() => {
+    const onDataChanged = () => {
+      if (loading || !!currentAction) return;
+      void refresh();
+    };
+    window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    return () => {
+      window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    };
+  });
 
   $effect(() => {
     const selectedRange = range;

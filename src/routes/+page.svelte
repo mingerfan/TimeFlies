@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    APP_DATA_CHANGED_EVENT,
     addTagToTask,
     archiveTask,
     createTask,
@@ -30,6 +31,8 @@
     task: TaskRecord;
     depth: number;
     kind: MiniNodeKind;
+    hasChildren: boolean;
+    childCount: number;
   };
 
   const ROOT_PARENT_VALUE = "__ROOT__";
@@ -112,33 +115,33 @@
 
   const miniNodes = $derived.by(() => {
     const nodes: MiniNode[] = [];
+
+    const pushNode = (task: TaskRecord, depth: number, kind: MiniNodeKind) => {
+      const childCount = (childrenByParent.get(task.id) ?? []).length;
+      nodes.push({
+        task,
+        depth,
+        kind,
+        hasChildren: childCount > 0,
+        childCount,
+      });
+    };
+
     if (selectedTask) {
       const chain = buildTaskChain(selectedTask.id, taskMap);
       chain.forEach((task, index) => {
-        nodes.push({
-          task,
-          depth: index,
-          kind: index === chain.length - 1 ? "current" : "ancestor",
-        });
+        pushNode(task, index, index === chain.length - 1 ? "current" : "ancestor");
       });
 
-      const children = (childrenByParent.get(selectedTask.id) ?? []).slice(0, 10);
+      const children = childrenByParent.get(selectedTask.id) ?? [];
       for (const child of children) {
-        nodes.push({
-          task: child,
-          depth: chain.length,
-          kind: "child",
-        });
+        pushNode(child, chain.length, "child");
       }
       return nodes;
     }
 
-    for (const root of rootTasks.slice(0, 12)) {
-      nodes.push({
-        task: root,
-        depth: 0,
-        kind: "root",
-      });
+    for (const root of rootTasks) {
+      pushNode(root, 0, "root");
     }
     return nodes;
   });
@@ -163,11 +166,17 @@
 
   onMount(() => {
     void refresh();
+    const onDataChanged = () => {
+      if (loading || !!currentAction) return;
+      void refresh();
+    };
+    window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
     const poller = window.setInterval(() => void refresh(), 30_000);
     return () => {
+      window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
       window.clearInterval(ticker);
       window.clearInterval(poller);
     };
@@ -547,10 +556,19 @@
                     type="button"
                     class="mini-node-main"
                     onclick={() => (selectedTaskId = node.task.id)}
-                    title={`${node.task.title}\n${statusLabel(node.task.status)} · Ex ${formatSeconds(node.task.exclusive_seconds)}`}
+                    title={`${node.task.title}\n${statusLabel(node.task.status)} · Ex ${formatSeconds(node.task.exclusive_seconds)}${node.hasChildren ? ` · 子任务 ${node.childCount}` : ""}`}
                   >
-                    <span class="mini-node-title">{node.task.title}</span>
-                    <span class="mini-node-sub">{statusLabel(node.task.status)}</span>
+                    <span class="mini-node-title-line">
+                      <span class="mini-node-title">{node.task.title}</span>
+                      {#if node.hasChildren}
+                        <span class="mini-node-branch" title={`下有 ${node.childCount} 个子任务`}>
+                          ↳{node.childCount}
+                        </span>
+                      {/if}
+                    </span>
+                    <span class="mini-node-sub">
+                      {statusLabel(node.task.status)}{node.hasChildren ? ` · 子任务 ${node.childCount}` : ""}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -789,6 +807,12 @@
     text-decoration: none;
   }
 
+  .mini-tree {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
   .mini-list {
     margin: 0;
     padding: 0;
@@ -796,8 +820,11 @@
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
-    max-height: 340px;
+    min-height: 0;
+    max-height: min(48dvh, 420px);
+    padding-right: 0.15rem;
     overflow: auto;
+    overscroll-behavior: contain;
   }
 
   .mini-node-row {
@@ -805,7 +832,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.24rem;
     align-items: center;
-    padding-left: calc(var(--depth) * 0.8rem);
+    padding-left: calc(min(var(--depth), 10) * 0.8rem);
   }
 
   .mini-node-main {
@@ -829,11 +856,28 @@
   }
 
   .mini-node-title {
-    display: block;
     font-size: 0.86rem;
+    line-height: 1.2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .mini-node-title-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.3rem;
+    align-items: center;
+  }
+
+  .mini-node-branch {
+    font-size: 0.68rem;
+    color: #315986;
+    border: 1px solid #bad0eb;
+    border-radius: 999px;
+    padding: 0.04rem 0.34rem;
+    background: #eef5ff;
+    white-space: nowrap;
   }
 
   .mini-node-sub {

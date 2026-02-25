@@ -22,6 +22,7 @@ pub fn run() {
             commands::create_task,
             commands::rename_task,
             commands::archive_task,
+            commands::delete_tasks,
             commands::reparent_task,
             commands::start_task,
             commands::pause_task,

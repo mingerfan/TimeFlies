@@ -1,6 +1,8 @@
 <script lang="ts">
   import {
+    APP_DATA_CHANGED_EVENT,
     createTask,
+    deleteTasks,
     getOverview,
     insertSubtaskAndStart,
     pauseTask,
@@ -12,12 +14,15 @@
     type TaskRecord,
   } from "$lib/api";
   import { buildTaskChain, formatSeconds, normalizeError, statusLabel } from "$lib/ui";
+  import { onMount } from "svelte";
 
   type VisibleTaskRow = {
     task: TaskRecord;
     depth: number;
     hasChildren: boolean;
   };
+
+  type DeleteMode = "archive" | "hard";
 
   let overview = $state<OverviewResponse | null>(null);
   let range = $state<OverviewRange>("week");
@@ -30,6 +35,9 @@
   let treeQuery = $state("");
   let quickAddTitle = $state("");
   let quickAddAsChild = $state(true);
+  let batchMode = $state(false);
+  let batchDeleteMode = $state<DeleteMode>("archive");
+  let batchSelectedTaskIds = $state<Set<string>>(new Set());
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -104,6 +112,50 @@
       : visibleRows
   );
 
+  const batchSelectedCount = $derived.by(() => batchSelectedTaskIds.size);
+
+  const batchRootTaskIds = $derived.by(() => {
+    if (batchSelectedTaskIds.size === 0) return [];
+    const roots: string[] = [];
+
+    for (const taskId of batchSelectedTaskIds) {
+      let parentId = taskMap.get(taskId)?.parent_id ?? null;
+      let hasSelectedAncestor = false;
+      while (parentId) {
+        if (batchSelectedTaskIds.has(parentId)) {
+          hasSelectedAncestor = true;
+          break;
+        }
+        parentId = taskMap.get(parentId)?.parent_id ?? null;
+      }
+      if (!hasSelectedAncestor) {
+        roots.push(taskId);
+      }
+    }
+
+    return roots;
+  });
+
+  const batchAffectedCount = $derived.by(() => {
+    if (batchRootTaskIds.length === 0) return 0;
+    const affected = new Set<string>();
+    for (const rootTaskId of batchRootTaskIds) {
+      collectSubtreeTaskIds(rootTaskId, childrenByParent, affected);
+    }
+    return affected.size;
+  });
+
+  onMount(() => {
+    const onDataChanged = () => {
+      if (loading || !!currentAction) return;
+      void refresh();
+    };
+    window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    return () => {
+      window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    };
+  });
+
   $effect(() => {
     const selectedRange = range;
     void refresh(selectedRange);
@@ -136,6 +188,11 @@
     const pruned = new Set([...expandedTaskIds].filter((id) => validIds.has(id)));
     if (!areSetsEqual(pruned, expandedTaskIds)) {
       expandedTaskIds = pruned;
+    }
+
+    const prunedBatch = new Set([...batchSelectedTaskIds].filter((id) => validIds.has(id)));
+    if (!areSetsEqual(prunedBatch, batchSelectedTaskIds)) {
+      batchSelectedTaskIds = prunedBatch;
     }
   });
 
@@ -215,26 +272,47 @@
     await runAction("开始任务", () => startTask(task.id));
   }
 
-  async function onStartSelected() {
+  async function onPrimarySelectedToggle() {
     if (!selectedTask) return;
+    if (selectedTask.status === "running") {
+      await runAction("暂停任务", () => pauseTask(selectedTask.id));
+      return;
+    }
     if (!(await ensureSwitchFromActive(selectedTask.id))) return;
     if (selectedTask.status === "paused") {
       await runAction("恢复任务", () => resumeTask(selectedTask.id));
       return;
     }
-    if (selectedTask.status === "running") return;
     await runAction("开始任务", () => startTask(selectedTask.id));
-  }
-
-  async function onPauseSelected() {
-    if (!selectedTask || selectedTask.status !== "running") return;
-    await runAction("暂停任务", () => pauseTask(selectedTask.id));
   }
 
   async function onStopSelected() {
     if (!selectedTask) return;
     if (selectedTask.status !== "running" && selectedTask.status !== "paused") return;
     await runAction("停止任务", () => stopTask(selectedTask.id));
+  }
+
+  async function onArchiveSelected() {
+    await onDeleteSelected(false);
+  }
+
+  async function onHardDeleteSelected() {
+    await onDeleteSelected(true);
+  }
+
+  async function onDeleteSelected(hardDelete: boolean) {
+    if (!selectedTask) return;
+    const modeLabel = hardDelete ? "硬删除" : "软删除（归档）";
+    const warning = hardDelete
+      ? "该操作不可恢复，将彻底移除任务、其子任务及相关事件记录。"
+      : "该操作会归档任务子树，可视为软删除。";
+    const confirmed = window.confirm(
+      `确认${modeLabel}任务「${selectedTask.title}」及其全部子任务吗？\n${warning}`
+    );
+    if (!confirmed) return;
+    await runAction(hardDelete ? "硬删除任务" : "删除任务", () =>
+      deleteTasks([selectedTask.id], hardDelete)
+    );
   }
 
   async function createQuickTask(startAfterCreate: boolean) {
@@ -327,6 +405,59 @@
     }
   }
 
+  function primaryActionLabel(task: TaskRecord): string {
+    if (task.status === "running") return "暂停";
+    if (task.status === "paused") return "恢复";
+    return "开始";
+  }
+
+  function toggleBatchMode() {
+    if (batchMode) {
+      batchMode = false;
+      batchSelectedTaskIds = new Set();
+      return;
+    }
+
+    batchMode = true;
+    if (selectedTaskId) {
+      batchSelectedTaskIds = new Set([selectedTaskId]);
+    }
+  }
+
+  function clearBatchSelection() {
+    batchSelectedTaskIds = new Set();
+  }
+
+  function onBatchRowChecked(taskId: string, checked: boolean) {
+    const next = new Set(batchSelectedTaskIds);
+    if (checked) {
+      next.add(taskId);
+    } else {
+      next.delete(taskId);
+    }
+    batchSelectedTaskIds = next;
+  }
+
+  async function onBatchDelete() {
+    if (batchRootTaskIds.length === 0) return;
+    const hardDelete = batchDeleteMode === "hard";
+    const modeLabel = hardDelete ? "硬删除" : "软删除（归档）";
+    const warning = hardDelete
+      ? "不可恢复，将彻底移除选中任务子树和关联事件。"
+      : "会归档选中任务子树。";
+    const confirmed = window.confirm(
+      `确认批量${modeLabel}吗？\n已选 ${batchSelectedCount} 个任务，预计影响 ${batchAffectedCount} 个节点。\n${warning}`
+    );
+    if (!confirmed) return;
+
+    const done = await runAction(hardDelete ? "批量硬删除" : "批量删除", () =>
+      deleteTasks(batchRootTaskIds, hardDelete)
+    );
+    if (done === null) return;
+    batchSelectedTaskIds = new Set();
+    batchMode = false;
+  }
+
   function taskQuickActionLabel(task: TaskRecord): string {
     if (task.status === "running") return "暂停任务";
     if (task.status === "paused") return "恢复任务";
@@ -348,6 +479,22 @@
       if (!right.has(id)) return false;
     }
     return true;
+  }
+
+  function collectSubtreeTaskIds(
+    rootTaskId: string,
+    childrenMap: Map<string, TaskRecord[]>,
+    collector: Set<string>
+  ) {
+    const stack = [rootTaskId];
+    while (stack.length > 0) {
+      const taskId = stack.pop();
+      if (!taskId || collector.has(taskId)) continue;
+      collector.add(taskId);
+      for (const child of childrenMap.get(taskId) ?? []) {
+        stack.push(child.id);
+      }
+    }
   }
 
   function flattenTaskRows(
@@ -415,12 +562,41 @@
     </div>
     <div class="selection-actions">
       <a href="/" class="ghost-link">打开任务详情页</a>
-      <button type="button" onclick={onStartSelected} disabled={!selectedTask || !!currentAction}>开始/恢复</button>
-      <button type="button" class="secondary" onclick={onPauseSelected} disabled={!selectedTask || !!currentAction}>
-        暂停
+      <button type="button" onclick={onPrimarySelectedToggle} disabled={!selectedTask || !!currentAction}>
+        {selectedTask ? primaryActionLabel(selectedTask) : "开始"}
       </button>
-      <button type="button" class="danger" onclick={onStopSelected} disabled={!selectedTask || !!currentAction}>
-        停止
+      <details class="more-actions">
+        <summary>更多操作</summary>
+        <div class="more-actions-menu">
+          <button type="button" class="secondary" onclick={onStopSelected} disabled={!selectedTask || !!currentAction}>
+            停止
+          </button>
+          <button
+            type="button"
+            class="subtle-danger"
+            onclick={onArchiveSelected}
+            disabled={!selectedTask || !!currentAction}
+          >
+            删除（归档）
+          </button>
+          <button
+            type="button"
+            class="danger"
+            onclick={onHardDeleteSelected}
+            disabled={!selectedTask || !!currentAction}
+          >
+            删除（硬）
+          </button>
+        </div>
+      </details>
+      <button
+        type="button"
+        class="subtle-danger"
+        class:active={batchMode}
+        onclick={toggleBatchMode}
+        disabled={!overview?.tasks.length || !!currentAction}
+      >
+        {batchMode ? "退出批量" : "批量删除"}
       </button>
     </div>
   </section>
@@ -474,6 +650,27 @@
       </button>
     </div>
 
+    {#if batchMode}
+      <div class="batch-toolbar">
+        <p>已选 {batchSelectedCount} 项，预计影响 {batchAffectedCount} 个节点</p>
+        <select bind:value={batchDeleteMode} disabled={!!currentAction}>
+          <option value="archive">软删除（归档）</option>
+          <option value="hard">硬删除（彻底移除）</option>
+        </select>
+        <button
+          type="button"
+          class={batchDeleteMode === "hard" ? "danger" : "subtle-danger"}
+          onclick={onBatchDelete}
+          disabled={!!currentAction || batchSelectedCount === 0}
+        >
+          执行批量删除
+        </button>
+        <button type="button" class="secondary" onclick={clearBatchSelection} disabled={!!currentAction}>
+          清空选择
+        </button>
+      </div>
+    {/if}
+
     {#if !overview || overview.tasks.length === 0}
       <p class="empty">当前暂无任务。</p>
     {:else if displayRows.length === 0}
@@ -485,11 +682,28 @@
             <li class="tree-item">
               <div
                 class="tree-row"
+                class:batch-mode={batchMode}
                 class:selected={selectedTaskId === row.task.id}
                 class:active-ancestor={activePathIds.has(row.task.id) && activeTaskId !== row.task.id}
                 class:active-leaf={activeTaskId === row.task.id}
                 style={`--depth:${row.depth}`}
               >
+                {#if batchMode}
+                  <label class="row-check" aria-label="加入批量删除">
+                    <input
+                      type="checkbox"
+                      checked={batchSelectedTaskIds.has(row.task.id)}
+                      onchange={(event) =>
+                        onBatchRowChecked(
+                          row.task.id,
+                          (event.currentTarget as HTMLInputElement).checked
+                        )}
+                      onclick={(event) => event.stopPropagation()}
+                      disabled={!!currentAction}
+                    />
+                  </label>
+                {/if}
+
                 {#if row.hasChildren}
                   <button
                     type="button"
@@ -514,15 +728,17 @@
                   <span class="title">{row.task.title}</span>
                 </button>
 
-                <button
-                  type="button"
-                  class="row-quick"
-                  onclick={(event) => onTaskQuickToggle(event, row.task)}
-                  disabled={!!currentAction}
-                  title={taskQuickActionLabel(row.task)}
-                >
-                  {taskQuickActionSymbol(row.task)}
-                </button>
+                {#if !batchMode}
+                  <button
+                    type="button"
+                    class="row-quick"
+                    onclick={(event) => onTaskQuickToggle(event, row.task)}
+                    disabled={!!currentAction}
+                    title={taskQuickActionLabel(row.task)}
+                  >
+                    {taskQuickActionSymbol(row.task)}
+                  </button>
+                {/if}
               </div>
             </li>
           {/each}
@@ -627,6 +843,27 @@
     gap: 0.45rem;
     flex-wrap: wrap;
     justify-content: flex-end;
+    align-items: center;
+  }
+
+  .selection-actions > button,
+  .selection-actions > .ghost-link,
+  .selection-actions > .more-actions > summary {
+    min-width: 7.2rem;
+    text-align: center;
+  }
+
+  .selection-actions > button,
+  .selection-actions > .ghost-link {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .selection-actions > .active {
+    border-color: #b46868;
+    background: #ffecec;
+    color: #7f1f1f;
   }
 
   .ghost-link {
@@ -637,6 +874,54 @@
     background: #f1f6ff;
     padding: 0.46rem 0.66rem;
     font-size: 0.88rem;
+  }
+
+  .more-actions {
+    position: relative;
+  }
+
+  .more-actions summary {
+    list-style: none;
+    border: 1px solid #2f629f;
+    border-radius: 0.62rem;
+    background: #f2f7ff;
+    color: #2f629f;
+    padding: 0.48rem 0.66rem;
+    cursor: pointer;
+    font-size: 0.86rem;
+    user-select: none;
+  }
+
+  .more-actions summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .more-actions[open] summary {
+    border-color: #1f4f92;
+    background: #e8f1ff;
+  }
+
+  .more-actions-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    min-width: 160px;
+    background: #fff;
+    border: 1px solid #ced9e8;
+    border-radius: 0.66rem;
+    box-shadow: 0 10px 24px rgba(17, 36, 63, 0.16);
+    padding: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    z-index: 5;
+  }
+
+  .more-actions-menu button {
+    width: 100%;
+    display: flex;
+    justify-content: flex-start;
+    text-align: left;
   }
 
   .tree-panel {
@@ -672,6 +957,10 @@
     align-items: center;
   }
 
+  .quick-row button {
+    min-width: 6.8rem;
+  }
+
   .child-toggle {
     display: inline-flex;
     align-items: center;
@@ -702,8 +991,35 @@
     background: #ffffff;
     color: #374151;
     padding: 0.4rem 0.52rem;
-    min-width: unset;
+    min-width: 4rem;
     font-size: 0.8rem;
+  }
+
+  .batch-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: 0.4rem;
+    align-items: center;
+    border: 1px dashed #c7d6ea;
+    border-radius: 0.62rem;
+    background: #f7fbff;
+    padding: 0.5rem 0.55rem;
+  }
+
+  .batch-toolbar p {
+    margin: 0;
+    color: #3f6087;
+    font-size: 0.82rem;
+    min-width: 0;
+  }
+
+  .batch-toolbar select {
+    border: 1px solid #d0d7de;
+    border-radius: 0.5rem;
+    background: #fff;
+    color: #2f3437;
+    padding: 0.39rem 0.48rem;
+    min-width: 0;
   }
 
   .tree-frame {
@@ -737,6 +1053,26 @@
     padding: 0.06rem 0.12rem 0.06rem calc(0.22rem + var(--depth) * 0.9rem);
     border-radius: 0.35rem;
     align-items: center;
+  }
+
+  .tree-row.batch-mode {
+    grid-template-columns: auto 1.25rem minmax(0, 1fr);
+  }
+
+  .row-check {
+    display: grid;
+    place-items: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    margin: 0;
+  }
+
+  .row-check input {
+    margin: 0;
+    min-width: unset;
+    width: 0.86rem;
+    height: 0.86rem;
+    cursor: pointer;
   }
 
   .toggle {
@@ -852,16 +1188,28 @@
   }
 
   button,
-  input {
+  input,
+  select {
     font: inherit;
   }
 
-  input {
+  input,
+  select {
     min-width: 8rem;
     border-radius: 0.62rem;
     border: 1px solid #8cafd7;
     padding: 0.5rem 0.62rem;
     background: #fff;
+  }
+
+  input[type="checkbox"] {
+    min-width: unset;
+    width: 0.92rem;
+    height: 0.92rem;
+    padding: 0;
+    margin: 0;
+    accent-color: #2f629f;
+    border-radius: 0.22rem;
   }
 
   button {
@@ -884,8 +1232,15 @@
     border-color: #8b2a2a;
   }
 
+  button.subtle-danger {
+    border-color: #c87373;
+    background: #ffecec;
+    color: #7f1f1f;
+  }
+
   button:disabled,
-  input:disabled {
+  input:disabled,
+  select:disabled {
     opacity: 0.56;
     cursor: not-allowed;
   }
@@ -948,6 +1303,10 @@
     }
 
     .tree-toolbar {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .batch-toolbar {
       grid-template-columns: 1fr 1fr;
     }
 

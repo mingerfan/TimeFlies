@@ -53,6 +53,19 @@ pub fn archive_task(state: State<'_, AppState>, task_id: String) -> AppResult<()
 }
 
 #[tauri::command]
+pub fn delete_tasks(
+    state: State<'_, AppState>,
+    task_ids: Vec<String>,
+    hard_delete: bool,
+) -> AppResult<()> {
+    let mut conn = state
+        .db
+        .lock()
+        .map_err(|_| "failed to lock database state".to_string())?;
+    app::delete_tasks(&mut conn, task_ids, hard_delete)
+}
+
+#[tauri::command]
 pub fn reparent_task(
     state: State<'_, AppState>,
     task_id: String,

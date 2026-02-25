@@ -77,27 +77,42 @@ pub fn rename_task(conn: &mut Connection, task_id: String, title: String) -> App
 }
 
 pub fn archive_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
-    ensure_task_exists(conn, &task_id)?;
-    let subtree_ids = collect_subtree_ids(conn, &task_id)?;
+    delete_tasks(conn, vec![task_id], false)
+}
 
-    if let Some((active_id, active_status)) = find_active_in_subtree(conn, &subtree_ids)? {
+pub fn delete_tasks(
+    conn: &mut Connection,
+    task_ids: Vec<String>,
+    hard_delete: bool,
+) -> AppResult<()> {
+    if task_ids.is_empty() {
+        return Err("task_ids cannot be empty".to_string());
+    }
+
+    let expanded_ids = expand_unique_subtree_ids(conn, &task_ids)?;
+    if expanded_ids.is_empty() {
+        return Ok(());
+    }
+
+    if let Some((active_id, active_status)) = find_active_in_subtree(conn, &expanded_ids)? {
+        let action = if hard_delete {
+            "hard delete"
+        } else {
+            "archive"
+        };
         return Err(format!(
-            "cannot archive task {active_id} because it is currently {active_status}"
+            "cannot {action} task {active_id} because it is currently {active_status}"
         ));
     }
 
-    let ts = now_ts();
     let tx = conn.transaction().map_err(to_error)?;
-
-    for id in subtree_ids {
-        tx.execute(
-            "UPDATE tasks SET archived_at = ?1 WHERE id = ?2 AND archived_at IS NULL",
-            params![ts, id],
-        )
-        .map_err(to_error)?;
+    if hard_delete {
+        hard_delete_task_ids(&tx, &expanded_ids)?;
+    } else {
+        archive_task_ids(&tx, &expanded_ids, now_ts())?;
     }
-
     tx.commit().map_err(to_error)?;
+
     Ok(())
 }
 
@@ -958,6 +973,67 @@ fn collect_subtree_ids(conn: &Connection, root_task_id: &str) -> AppResult<Vec<S
     }
 
     Ok(result)
+}
+
+fn expand_unique_subtree_ids(conn: &Connection, root_task_ids: &[String]) -> AppResult<Vec<String>> {
+    let mut expanded = Vec::new();
+    let mut seen = HashSet::new();
+
+    for root_task_id in root_task_ids {
+        let task_id = root_task_id.trim();
+        if task_id.is_empty() {
+            continue;
+        }
+        if seen.contains(task_id) {
+            continue;
+        }
+
+        ensure_task_exists(conn, task_id)?;
+        let subtree_ids = collect_subtree_ids(conn, task_id)?;
+        for subtree_id in subtree_ids {
+            if seen.insert(subtree_id.clone()) {
+                expanded.push(subtree_id);
+            }
+        }
+    }
+
+    Ok(expanded)
+}
+
+fn archive_task_ids(tx: &Transaction<'_>, task_ids: &[String], archived_at: i64) -> AppResult<()> {
+    for task_id in task_ids {
+        tx.execute(
+            "UPDATE tasks SET archived_at = ?1 WHERE id = ?2 AND archived_at IS NULL",
+            params![archived_at, task_id],
+        )
+        .map_err(to_error)?;
+    }
+    Ok(())
+}
+
+fn hard_delete_task_ids(tx: &Transaction<'_>, task_ids: &[String]) -> AppResult<()> {
+    for task_id in task_ids {
+        tx.execute(
+            "DELETE FROM rest_suggestions WHERE task_id = ?1",
+            params![task_id],
+        )
+        .map_err(to_error)?;
+        tx.execute("DELETE FROM time_events WHERE task_id = ?1", params![task_id])
+            .map_err(to_error)?;
+    }
+
+    for task_id in task_ids.iter().rev() {
+        tx.execute("DELETE FROM tasks WHERE id = ?1", params![task_id])
+            .map_err(to_error)?;
+    }
+
+    tx.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM task_tags)",
+        [],
+    )
+    .map_err(to_error)?;
+
+    Ok(())
 }
 
 fn find_active_in_subtree(
