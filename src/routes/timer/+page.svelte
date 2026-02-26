@@ -325,6 +325,8 @@
   .timer-main {
     display: flex;
     flex-direction: column;
+    justify-content: center;
+    align-items: center;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -340,10 +342,13 @@
   .focus-panel {
     display: flex;
     flex-direction: column;
+    justify-content: center;
     flex: 1;
     gap: 0.55rem;
     align-items: center;
     text-align: center;
+    width: min(960px, 100%);
+    max-height: 100%;
     height: 100%;
     min-height: 0;
     overflow: auto;
@@ -490,4 +495,3 @@
     }
   }
 </style>
-
