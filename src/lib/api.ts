@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type TaskStatus = "idle" | "running" | "paused" | "stopped";
-export type OverviewRange = "all" | "day" | "week";
+export type OverviewRange = "all" | "day" | "week" | "today";
 export const APP_DATA_CHANGED_EVENT = "timeflies:data-changed";
 
 export interface TaskRecord {

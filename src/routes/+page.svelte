@@ -232,7 +232,10 @@
     loading = true;
     errorMessage = "";
     try {
-      const [allSnapshot, daySnapshot] = await Promise.all([getOverview("all"), getOverview("day")]);
+      const [allSnapshot, daySnapshot] = await Promise.all([
+        getOverview("all"),
+        getOverview("today"),
+      ]);
       overview = allSnapshot;
       dayOverview = daySnapshot;
       if (selectedTaskId && !allSnapshot.tasks.some((task) => task.id === selectedTaskId)) {
@@ -481,7 +484,7 @@
       <article class="panel session-panel">
         <div class="session-head">
           <h2>会话计时器</h2>
-          <p>近 24 小时已专注 {formatSeconds(todayFocusedSeconds)}</p>
+          <p>当日已专注 {formatSeconds(todayFocusedSeconds)}</p>
         </div>
         {#if heroControlTask}
           <p class="session-target">{heroControlTask.title}</p>
@@ -555,7 +558,7 @@
     <aside class="side-rail">
       <article class="panel today-focus-panel">
         <div class="today-head">
-          <h2>近 24 小时已专注</h2>
+          <h2>当日已专注</h2>
           <p>{formatSeconds(todayFocusedSeconds)}</p>
         </div>
         <p class="today-clock">{formatClock(todayFocusedSeconds)}</p>

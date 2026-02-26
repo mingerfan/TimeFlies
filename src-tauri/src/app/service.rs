@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use chrono::{Local, TimeZone};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -1399,8 +1400,9 @@ fn resolve_window(range: Option<String>, now: i64) -> AppResult<(Option<i64>, St
         "all" => Ok((None, "all".to_string())),
         "day" => Ok((Some(now - 86_400), "day".to_string())),
         "week" => Ok((Some(now - 604_800), "week".to_string())),
+        "today" => Ok((Some(local_day_start_ts(now)), "today".to_string())),
         unsupported => Err(format!(
-            "unsupported range '{unsupported}', expected one of: all, day, week"
+            "unsupported range '{unsupported}', expected one of: all, day, week, today"
         )),
     }
 }
@@ -1410,6 +1412,22 @@ fn now_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn local_day_start_ts(now: i64) -> i64 {
+    let Some(local_now) = Local.timestamp_opt(now, 0).single() else {
+        return now;
+    };
+    let Some(naive_midnight) = local_now.date_naive().and_hms_opt(0, 0, 0) else {
+        return local_now.timestamp();
+    };
+    Local
+        .from_local_datetime(&naive_midnight)
+        .single()
+        .or_else(|| Local.from_local_datetime(&naive_midnight).earliest())
+        .or_else(|| Local.from_local_datetime(&naive_midnight).latest())
+        .unwrap_or(local_now)
+        .timestamp()
 }
 
 fn to_error(error: impl std::fmt::Display) -> String {
