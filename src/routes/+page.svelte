@@ -22,13 +22,10 @@
   } from "$lib/ui";
   import { onMount } from "svelte";
 
-  type MiniNodeKind = "ancestor" | "current" | "child" | "root";
-  type MiniNode = {
+  type MiniTreeRow = {
     task: TaskRecord;
     depth: number;
-    kind: MiniNodeKind;
     hasChildren: boolean;
-    childCount: number;
   };
 
   let overview = $state<OverviewResponse | null>(null);
@@ -38,6 +35,9 @@
   let currentAction = $state("");
   let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
+  let expandedMiniTaskIds = $state<Set<string>>(new Set());
+  let miniAutoRootId = $state<string | null>(null);
+  let miniAutoFocusId = $state<string | null>(null);
 
   let commandInput = $state("");
   let commandFeedback = $state("");
@@ -65,12 +65,6 @@
     return map;
   });
 
-  const rootTasks = $derived.by(() =>
-    (overview?.tasks ?? [])
-      .filter((task) => !task.parent_id)
-      .sort((a, b) => a.created_at - b.created_at)
-  );
-
   const selectedTask = $derived.by(() =>
     selectedTaskId ? (taskMap.get(selectedTaskId) ?? null) : null
   );
@@ -87,38 +81,23 @@
 
   const heroControlTask = $derived.by(() => activeTask ?? selectedTask);
 
-  const miniNodes = $derived.by(() => {
-    const nodes: MiniNode[] = [];
-
-    const pushNode = (task: TaskRecord, depth: number, kind: MiniNodeKind) => {
-      const childCount = (childrenByParent.get(task.id) ?? []).length;
-      nodes.push({
-        task,
-        depth,
-        kind,
-        hasChildren: childCount > 0,
-        childCount,
-      });
-    };
-
-    if (selectedTask) {
-      const chain = buildTaskChain(selectedTask.id, taskMap);
-      chain.forEach((task, index) => {
-        pushNode(task, index, index === chain.length - 1 ? "current" : "ancestor");
-      });
-
-      const children = childrenByParent.get(selectedTask.id) ?? [];
-      for (const child of children) {
-        pushNode(child, chain.length, "child");
-      }
-      return nodes;
-    }
-
-    for (const root of rootTasks) {
-      pushNode(root, 0, "root");
-    }
-    return nodes;
+  const activePathIds = $derived.by(() => {
+    const chain = buildTaskChain(activeTask?.id ?? null, taskMap);
+    return new Set(chain.map((task) => task.id));
   });
+
+  const miniTreeFocusTask = $derived.by(() => selectedTask ?? activeTask);
+
+  const miniTreeRootTask = $derived.by(() => {
+    const chain = buildTaskChain(miniTreeFocusTask?.id ?? null, taskMap);
+    return chain[0] ?? null;
+  });
+
+  const miniTreeRoots = $derived.by(() => (miniTreeRootTask ? [miniTreeRootTask] : []));
+
+  const miniTreeRows = $derived.by(() =>
+    flattenMiniTreeRows(miniTreeRoots, childrenByParent, expandedMiniTaskIds)
+  );
 
   const activeElapsedSeconds = $derived.by(() => {
     if (!activeTask) return 0;
@@ -202,6 +181,44 @@
     };
   });
 
+  $effect(() => {
+    const rootTask = miniTreeRootTask;
+    const focusId = miniTreeFocusTask?.id ?? null;
+    if (!rootTask) {
+      if (expandedMiniTaskIds.size > 0) {
+        expandedMiniTaskIds = new Set();
+      }
+      miniAutoRootId = null;
+      miniAutoFocusId = null;
+      return;
+    }
+
+    const scopedTaskIds = new Set(collectMiniSubtreeTaskIds(rootTask.id, childrenByParent));
+    let nextExpanded = new Set([...expandedMiniTaskIds].filter((id) => scopedTaskIds.has(id)));
+    const rootChanged = miniAutoRootId !== rootTask.id;
+    const focusChanged = miniAutoFocusId !== focusId;
+
+    if (rootChanged) {
+      nextExpanded = new Set();
+    }
+
+    if (rootChanged || focusChanged) {
+      nextExpanded.add(rootTask.id);
+      for (const task of buildTaskChain(focusId, taskMap)) {
+        if (scopedTaskIds.has(task.id)) {
+          nextExpanded.add(task.id);
+        }
+      }
+    }
+
+    miniAutoRootId = rootTask.id;
+    miniAutoFocusId = focusId;
+
+    if (!areMiniSetsEqual(nextExpanded, expandedMiniTaskIds)) {
+      expandedMiniTaskIds = nextExpanded;
+    }
+  });
+
   async function refresh() {
     loading = true;
     errorMessage = "";
@@ -281,6 +298,16 @@
     await runAction("停止任务", () => stopTask(task.id));
   }
 
+  function toggleMiniExpand(taskId: string) {
+    const next = new Set(expandedMiniTaskIds);
+    if (next.has(taskId)) {
+      next.delete(taskId);
+    } else {
+      next.add(taskId);
+    }
+    expandedMiniTaskIds = next;
+  }
+
   function nodeActionSymbol(task: TaskRecord): string {
     return task.status === "running" ? "⏸" : "▶";
   }
@@ -344,6 +371,64 @@
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     onFocusActiveTask();
+  }
+
+  function areMiniSetsEqual(left: Set<string>, right: Set<string>) {
+    if (left.size !== right.size) return false;
+    for (const id of left) {
+      if (!right.has(id)) return false;
+    }
+    return true;
+  }
+
+  function collectMiniSubtreeTaskIds(
+    rootTaskId: string,
+    childrenMap: Map<string, TaskRecord[]>
+  ): string[] {
+    const stack = [rootTaskId];
+    const visited = new Set<string>();
+    const ids: string[] = [];
+
+    while (stack.length > 0) {
+      const taskId = stack.pop();
+      if (!taskId || visited.has(taskId)) continue;
+      visited.add(taskId);
+      ids.push(taskId);
+      for (const child of childrenMap.get(taskId) ?? []) {
+        stack.push(child.id);
+      }
+    }
+    return ids;
+  }
+
+  function flattenMiniTreeRows(
+    roots: TaskRecord[],
+    childrenMap: Map<string, TaskRecord[]>,
+    expandedIds: Set<string>
+  ): MiniTreeRow[] {
+    const rows: MiniTreeRow[] = [];
+    const visited = new Set<string>();
+
+    const visit = (task: TaskRecord, depth: number) => {
+      if (visited.has(task.id)) return;
+      visited.add(task.id);
+      const children = childrenMap.get(task.id) ?? [];
+      rows.push({
+        task,
+        depth,
+        hasChildren: children.length > 0,
+      });
+      if (!expandedIds.has(task.id)) return;
+      for (const child of children) {
+        visit(child, depth + 1);
+      }
+    };
+
+    for (const root of roots) {
+      visit(root, 0);
+    }
+
+    return rows;
   }
 </script>
 
@@ -475,51 +560,66 @@
 
       <article class="panel mini-tree">
         <div class="mini-tree-head">
-          <h2>Mini 任务树</h2>
+          <h2>当前任务系</h2>
           <a href="/tree">完整树视图</a>
         </div>
-        {#if miniNodes.length === 0}
-          <p class="empty">暂无任务</p>
+        {#if !miniTreeRootTask}
+          <p class="empty">暂无可显示的任务系</p>
+        {:else if miniTreeRows.length === 0}
+          <p class="empty">当前任务系暂无节点</p>
         {:else}
-          <ul class="mini-list">
-            {#each miniNodes as node (`${node.kind}-${node.task.id}`)}
-              <li>
-                <div
-                  class="mini-node-row"
-                  class:current={node.kind === "current"}
-                  style={`--depth:${node.depth}`}
-                >
-                  <button
-                    type="button"
-                    class="mini-node-main"
-                    onclick={() => (selectedTaskId = node.task.id)}
-                    title={`${node.task.title}\n${statusLabel(node.task.status)} · Ex ${formatSeconds(node.task.exclusive_seconds)}${node.hasChildren ? ` · 子任务 ${node.childCount}` : ""}`}
+          <div class="mini-tree-frame">
+            <ul class="mini-list" role="tree" aria-label="当前任务系任务树">
+              {#each miniTreeRows as row (row.task.id)}
+                <li class="mini-item">
+                  <div
+                    class="mini-tree-row"
+                    class:selected={selectedTaskId === row.task.id}
+                    class:active-ancestor={activePathIds.has(row.task.id) && activeTask?.id !== row.task.id}
+                    class:active-leaf={activeTask?.id === row.task.id}
+                    style={`--depth:${row.depth}`}
                   >
-                    <span class="mini-node-title-line">
-                      <span class="mini-node-title">{node.task.title}</span>
-                      {#if node.hasChildren}
-                        <span class="mini-node-branch" title={`下有 ${node.childCount} 个子任务`}>
-                          ↳{node.childCount}
-                        </span>
-                      {/if}
-                    </span>
-                    <span class="mini-node-sub">
-                      {statusLabel(node.task.status)}{node.hasChildren ? ` · 子任务 ${node.childCount}` : ""}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="mini-node-action"
-                    onclick={(event) => onMiniNodeToggle(event, node.task)}
-                    disabled={!!currentAction}
-                    title={nodeActionLabel(node.task)}
-                  >
-                    {nodeActionSymbol(node.task)}
-                  </button>
-                </div>
-              </li>
-            {/each}
-          </ul>
+                    {#if row.hasChildren}
+                      <button
+                        type="button"
+                        class="mini-toggle"
+                        class:expanded={expandedMiniTaskIds.has(row.task.id)}
+                        onclick={() => toggleMiniExpand(row.task.id)}
+                        aria-label={expandedMiniTaskIds.has(row.task.id) ? "收起子任务" : "展开子任务"}
+                      >
+                        <span class="chevron" aria-hidden="true">▸</span>
+                      </button>
+                    {:else}
+                      <span class="mini-toggle placeholder" aria-hidden="true"></span>
+                    {/if}
+
+                    <button
+                      type="button"
+                      class="mini-row-main"
+                      onclick={() => (selectedTaskId = row.task.id)}
+                      title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(row.task.exclusive_seconds)} · In ${formatSeconds(row.task.inclusive_seconds)}`}
+                    >
+                      <span class="mini-row-title">{row.task.title}</span>
+                      <span class="mini-row-meta">
+                        {statusLabel(row.task.status)} · Ex {formatSeconds(row.task.exclusive_seconds)} · In
+                        {formatSeconds(row.task.inclusive_seconds)}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="mini-row-quick"
+                      onclick={(event) => onMiniNodeToggle(event, row.task)}
+                      disabled={!!currentAction}
+                      title={nodeActionLabel(row.task)}
+                    >
+                      {nodeActionSymbol(row.task)}
+                    </button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
         {/if}
       </article>
     </aside>
@@ -826,84 +926,140 @@
     overflow: hidden;
   }
 
+  .mini-tree-frame {
+    border: 1px solid #d8dee4;
+    border-radius: 0.68rem;
+    background: #ffffff;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .mini-tree-frame::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
   .mini-list {
     margin: 0;
-    padding: 0;
+    padding: 0.24rem;
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
-    flex: 1;
-    min-height: 0;
-    max-height: none;
-    padding-right: 0.15rem;
-    overflow: auto;
-    overscroll-behavior: contain;
+    gap: 0.1rem;
   }
 
-  .mini-node-row {
+  .mini-item {
+    border-radius: 0.45rem;
+  }
+
+  .mini-tree-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.24rem;
+    grid-template-columns: 1.22rem minmax(0, 1fr) auto;
+    gap: 0.2rem;
     align-items: center;
-    padding-left: calc(min(var(--depth), 10) * 0.8rem);
+    padding: 0.08rem 0.12rem 0.08rem calc(0.22rem + min(var(--depth), 10) * 0.95rem);
+    border-radius: 0.45rem;
   }
 
-  .mini-node-main {
-    width: 100%;
-    text-align: left;
+  .mini-toggle {
     border: none;
-    border-radius: 0.36rem;
+    border-radius: 0.25rem;
     background: transparent;
-    padding: 0.35rem 0.42rem;
-    color: #2f3437;
+    color: #6b7280;
+    width: 1.1rem;
+    height: 1.1rem;
+    padding: 0;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    font-size: 0.86rem;
+    line-height: 1;
+    transition: background 120ms ease, color 120ms ease;
   }
 
-  .mini-node-row:hover .mini-node-main,
-  .mini-node-row:focus-within .mini-node-main {
+  .mini-toggle:hover {
+    color: #374151;
     background: #f3f4f6;
   }
 
-  .mini-node-row.current .mini-node-main {
-    background: #e7edf6;
-    color: #122a46;
+  .mini-toggle .chevron {
+    display: block;
+    width: 0.68rem;
+    text-align: center;
+    transition: transform 120ms ease;
+    transform-origin: center;
   }
 
-  .mini-node-title {
-    font-size: 0.86rem;
-    line-height: 1.2;
+  .mini-toggle.expanded .chevron {
+    transform: rotate(90deg);
+  }
+
+  .mini-toggle.placeholder {
+    border: none;
+    background: transparent;
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  .mini-row-main {
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 0.45rem;
+    background: transparent;
+    padding: 0.42rem 0.52rem;
+    color: #2f3437;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+
+  .mini-tree-row:hover .mini-row-main,
+  .mini-tree-row:focus-within .mini-row-main {
+    background: #f3f4f6;
+  }
+
+  .mini-tree-row.active-ancestor .mini-row-main {
+    background: #f7f8fa;
+  }
+
+  .mini-tree-row.active-leaf .mini-row-main {
+    background: #eceff3;
+    color: #111827;
+  }
+
+  .mini-tree-row.selected .mini-row-main {
+    background: #e5e7eb;
+    color: #111827;
+  }
+
+  .mini-row-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    line-height: 1.25;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .mini-node-title-line {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.3rem;
-    align-items: center;
-  }
-
-  .mini-node-branch {
-    font-size: 0.68rem;
-    color: #315986;
-    border: 1px solid #bad0eb;
-    border-radius: 999px;
-    padding: 0.04rem 0.34rem;
-    background: #eef5ff;
+  .mini-row-meta {
+    font-size: 0.76rem;
+    color: #60718b;
+    line-height: 1.32;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .mini-node-sub {
-    display: block;
-    margin-top: 0.06rem;
-    font-size: 0.72rem;
-    color: #6b7280;
-  }
-
-  .mini-node-action {
-    width: 1.34rem;
-    height: 1.34rem;
+  .mini-row-quick {
+    width: 1.42rem;
+    height: 1.42rem;
     border: 1px solid #d0d7de;
     border-radius: 0.3rem;
     background: #fff;
@@ -918,13 +1074,16 @@
     transition: opacity 120ms ease;
   }
 
-  .mini-node-row:hover .mini-node-action,
-  .mini-node-row:focus-within .mini-node-action {
+  .mini-tree-row:hover .mini-row-quick,
+  .mini-tree-row:focus-within .mini-row-quick {
     opacity: 1;
     pointer-events: auto;
+    border-color: #9aa4b2;
+    color: #1f2937;
+    background: #f8fafc;
   }
 
-  .mini-node-action:disabled {
+  .mini-row-quick:disabled {
     opacity: 0.5;
     pointer-events: none;
   }
