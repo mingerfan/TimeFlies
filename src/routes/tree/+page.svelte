@@ -569,7 +569,7 @@
       </button>
       <div class="more-actions-wrapper">
         <button type="button" class="action-btn action-subtle" onclick={(e) => {
-          const details = e.currentTarget.closest('.more-actions-wrapper').querySelector('details');
+          const details = e.currentTarget.closest('.more-actions-wrapper')!.querySelector('details')!;
           details.open = !details.open;
         }}>
           更多操作
