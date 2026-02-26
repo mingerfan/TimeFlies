@@ -10,7 +10,7 @@ export type CommandExecutionResult = {
   clearInput: boolean;
 };
 
-type CommandRunApi = {
+export type CommandRunApi = {
   createTask: (title: string, parentId: string | null) => Promise<string | null>;
   renameTask: (taskId: string, title: string) => Promise<boolean>;
   reparentTask: (taskId: string, parentId: string | null) => Promise<boolean>;

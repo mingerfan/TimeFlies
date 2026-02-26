@@ -1,13 +1,8 @@
 <script lang="ts">
   import {
     APP_DATA_CHANGED_EVENT,
-    addTagToTask,
-    createTask,
     getOverview,
-    insertSubtaskAndStart,
     pauseTask,
-    renameTask,
-    reparentTask,
     resumeTask,
     startTask,
     stopTask,
@@ -15,8 +10,8 @@
     type TaskRecord,
   } from "$lib/api";
   import CommandBar from "$lib/components/CommandBar.svelte";
-  import { executeParsedCommand, type CommandFeedbackTone } from "$lib/command/executor";
-  import { parseCommandInput } from "$lib/command/parser";
+  import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
+  import { type CommandFeedbackTone } from "$lib/command/executor";
   import {
     buildTaskChain,
     formatClock,
@@ -34,10 +29,6 @@
     kind: MiniNodeKind;
     hasChildren: boolean;
     childCount: number;
-  };
-
-  type RunActionOptions = {
-    surfaceError?: boolean;
   };
 
   let overview = $state<OverviewResponse | null>(null);
@@ -201,7 +192,7 @@
   async function runAction<T>(
     label: string,
     action: () => Promise<T>,
-    options: RunActionOptions = {}
+    options: CommandRunActionOptions = {}
   ): Promise<T | null> {
     const { surfaceError = true } = options;
     currentAction = label;
@@ -224,7 +215,7 @@
 
   async function ensureSwitchFromActive(
     targetTaskId: string,
-    options: RunActionOptions = {}
+    options: CommandRunActionOptions = {}
   ): Promise<boolean> {
     const active = activeTask;
     if (!active || active.status !== "running" || active.id === targetTaskId) {
@@ -286,50 +277,26 @@
   }
 
   async function onCommandExecute(input: string) {
-    errorMessage = "";
-    const parsed = parseCommandInput(input);
-    const result = await executeParsedCommand({
-      parsed,
+    await handleCommandInput({
+      input,
       selectedTask,
       selectedTaskId,
       activeTask,
       tasks: overview?.tasks ?? [],
-      run: {
-        createTask: (title, parentId) =>
-          runAction("创建任务", () => createTask(title, parentId), { surfaceError: false }),
-        renameTask: async (taskId, title) =>
-          (await runAction("重命名任务", () => renameTask(taskId, title), { surfaceError: false })) !== null,
-        reparentTask: async (taskId, parentId) =>
-          (await runAction("调整父任务", () => reparentTask(taskId, parentId), { surfaceError: false })) !== null,
-        startTask: async (taskId) =>
-          (await runAction("开始任务", () => startTask(taskId), { surfaceError: false })) !== null,
-        pauseTask: async (taskId) =>
-          (await runAction("暂停任务", () => pauseTask(taskId), { surfaceError: false })) !== null,
-        resumeTask: async (taskId) =>
-          (await runAction("恢复任务", () => resumeTask(taskId), { surfaceError: false })) !== null,
-        stopTask: async (taskId) =>
-          (await runAction("停止任务", () => stopTask(taskId), { surfaceError: false })) !== null,
-        insertSubtaskAndStart: (parentTaskId, title) =>
-          runAction("插入子任务", () => insertSubtaskAndStart(parentTaskId, title), {
-            surfaceError: false,
-          }),
-        addTagToTask: async (taskId, tagName) =>
-          (await runAction(`添加标签 #${tagName}`, () => addTagToTask(taskId, tagName), {
-            surfaceError: false,
-          })) !== null,
+      runAction,
+      ensureSwitchFromActive,
+      selectTask: (taskId) => (selectedTaskId = taskId),
+      clearErrorMessage: () => {
+        errorMessage = "";
       },
-      ensureSwitchFromActive: (targetTaskId) =>
-        ensureSwitchFromActive(targetTaskId, { surfaceError: false }),
-      selectTask: (taskId) => {
-        selectedTaskId = taskId;
+      setCommandFeedback: (message, tone) => {
+        commandFeedback = message;
+        commandFeedbackTone = tone;
+      },
+      clearCommandInput: () => {
+        commandInput = "";
       },
     });
-
-    commandFeedback = result.message;
-    commandFeedbackTone = result.tone;
-    if (result.clearInput) {
-      commandInput = "";
-    }
   }
 
   function onFocusActiveTask() {

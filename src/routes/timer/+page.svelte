@@ -2,7 +2,6 @@
   import {
     APP_DATA_CHANGED_EVENT,
     getOverview,
-    insertSubtaskAndStart,
     pauseTask,
     respondRestSuggestion,
     resumeTask,
@@ -11,6 +10,9 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
+  import CommandBar from "$lib/components/CommandBar.svelte";
+  import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
+  import { type CommandFeedbackTone } from "$lib/command/executor";
   import {
     buildTaskChain,
     formatClock,
@@ -29,7 +31,9 @@
   let currentAction = $state("");
   let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
-  let subtaskTitle = $state("");
+  let commandInput = $state("");
+  let commandFeedback = $state("");
+  let commandFeedbackTone = $state<CommandFeedbackTone>("success");
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -51,14 +55,6 @@
     buildTaskChain(selectedTask?.id ?? null, taskMap)
       .map((task) => task.title)
       .join(" / ")
-  );
-
-  const recentTasks = $derived.by(() =>
-    [...(overview?.tasks ?? [])].sort((a, b) => b.created_at - a.created_at).slice(0, 10)
-  );
-
-  const totalDaySeconds = $derived.by(() =>
-    (overview?.tasks ?? []).reduce((sum, task) => sum + task.exclusive_seconds, 0)
   );
 
   const displayedSeconds = $derived.by(() => {
@@ -113,49 +109,40 @@
     }
   }
 
-  async function runAction(label: string, action: () => Promise<void>): Promise<boolean> {
+  async function runAction<T>(
+    label: string,
+    action: () => Promise<T>,
+    options: CommandRunActionOptions = {}
+  ): Promise<T | null> {
+    const { surfaceError = true } = options;
     currentAction = label;
-    errorMessage = "";
+    if (surfaceError) {
+      errorMessage = "";
+    }
     try {
-      await action();
+      const result = await action();
       await refresh();
-      return true;
+      return result;
     } catch (error) {
-      errorMessage = normalizeError(error);
-      return false;
+      if (surfaceError) {
+        errorMessage = normalizeError(error);
+      }
+      return null;
     } finally {
       currentAction = "";
     }
   }
 
-  async function switchToTask(task: TaskRecord) {
+  async function ensureSwitchFromActive(
+    targetTaskId: string,
+    options: CommandRunActionOptions = {}
+  ): Promise<boolean> {
     const active = activeTask;
-    if (active && active.id !== task.id && active.status === "running") {
-      const confirmed = window.confirm(
-        `当前任务「${active.title}」正在进行中，切换到「${task.title}」将先暂停当前任务。是否继续？`
-      );
-      if (!confirmed) return;
-      const paused = await runAction("暂停当前任务", () => pauseTask(active.id));
-      if (!paused) return;
+    if (!active || active.id === targetTaskId || active.status !== "running") {
+      return true;
     }
-
-    if (task.status === "running") {
-      selectedTaskId = task.id;
-      return;
-    }
-
-    if (task.status === "paused") {
-      const resumed = await runAction("恢复任务", () => resumeTask(task.id));
-      if (resumed) {
-        selectedTaskId = task.id;
-      }
-      return;
-    }
-
-    const started = await runAction("开始任务", () => startTask(task.id));
-    if (started) {
-      selectedTaskId = task.id;
-    }
+    const paused = await runAction("暂停当前任务", () => pauseTask(active.id), options);
+    return paused !== null;
   }
 
   async function onMainToggle() {
@@ -166,10 +153,12 @@
       return;
     }
     if (task.status === "paused") {
+      if (!(await ensureSwitchFromActive(task.id))) return;
       await runAction("恢复任务", () => resumeTask(task.id));
       return;
     }
-    await switchToTask(task);
+    if (!(await ensureSwitchFromActive(task.id))) return;
+    await runAction("开始任务", () => startTask(task.id));
   }
 
   async function onStopSelected() {
@@ -177,21 +166,6 @@
     if (!task) return;
     if (task.status !== "running" && task.status !== "paused") return;
     await runAction("停止任务", () => stopTask(task.id));
-  }
-
-  async function onInsertSubtask(event: SubmitEvent) {
-    event.preventDefault();
-    const task = selectedTask;
-    if (!task || task.status !== "running") return;
-    const title = subtaskTitle.trim();
-    if (!title) return;
-    const done = await runAction("插入子任务", async () => {
-      const childId = await insertSubtaskAndStart(task.id, title);
-      selectedTaskId = childId;
-    });
-    if (done) {
-      subtaskTitle = "";
-    }
   }
 
   async function onRespondRestSuggestion(accept: boolean) {
@@ -202,23 +176,27 @@
     );
   }
 
-  function recentTaskRootTitle(task: TaskRecord): string {
-    const chain = buildTaskChain(task.id, taskMap);
-    return chain[0]?.title ?? "";
-  }
-
-  function recentTaskMeta(task: TaskRecord): string {
-    const status = statusLabel(task.status);
-    const rootTitle = recentTaskRootTitle(task);
-    if (!rootTitle || rootTitle === task.title) return status;
-    return `${status} . ${rootTitle}`;
-  }
-
-  function recentTaskTooltip(task: TaskRecord): string {
-    const chainText = buildTaskChain(task.id, taskMap)
-      .map((node) => node.title)
-      .join(" / ");
-    return `${task.title}\n状态 ${statusLabel(task.status)} · Ex ${formatSeconds(task.exclusive_seconds)}\n路径 ${chainText}`;
+  async function onCommandExecute(input: string) {
+    await handleCommandInput({
+      input,
+      selectedTask,
+      selectedTaskId,
+      activeTask,
+      tasks: overview?.tasks ?? [],
+      runAction,
+      ensureSwitchFromActive,
+      selectTask: (taskId) => (selectedTaskId = taskId),
+      clearErrorMessage: () => {
+        errorMessage = "";
+      },
+      setCommandFeedback: (message, tone) => {
+        commandFeedback = message;
+        commandFeedbackTone = tone;
+      },
+      clearCommandInput: () => {
+        commandInput = "";
+      },
+    });
   }
 </script>
 
@@ -238,7 +216,7 @@
     <p class="error">{errorMessage}</p>
   {/if}
 
-  <section class="timer-grid">
+  <section class="timer-main">
     <article class="panel focus-panel">
       {#if selectedTask}
         <p class="task-name">{selectedTask.title}</p>
@@ -265,70 +243,21 @@
           </button>
         </div>
 
-        <form class="subtask-form" onsubmit={onInsertSubtask}>
-          <label for="subtask-input">运行中插入子任务</label>
-          <div class="subtask-row">
-            <input
-              id="subtask-input"
-              type="text"
-              bind:value={subtaskTitle}
-              placeholder="子任务标题"
-              disabled={selectedTask.status !== "running" || !!currentAction}
-            />
-            <button
-              type="submit"
-              disabled={selectedTask.status !== "running" || !!currentAction || !subtaskTitle.trim()}
-            >
-              插入并开始
-            </button>
-          </div>
-        </form>
+        <section class="timer-command">
+          <h2>命令模式</h2>
+          <p class="task-meta">插入子任务请使用 `/sub 子任务标题`（复用主页命令逻辑）</p>
+          <CommandBar
+            bind:value={commandInput}
+            busy={loading || !!currentAction}
+            feedback={commandFeedback}
+            tone={commandFeedbackTone}
+            onexecute={onCommandExecute}
+          />
+        </section>
       {:else}
         <p class="empty">暂无任务。请先在“任务执行”页面创建任务。</p>
       {/if}
     </article>
-
-    <section class="side-column">
-      <aside class="panel side-panel metrics-panel">
-        <h2>专注时间</h2>
-        <div class="metric">
-          <p class="label">今日累计专注</p>
-          <p class="value">{formatSeconds(totalDaySeconds)}</p>
-        </div>
-        <div class="metric">
-          <p class="label">当前活动任务</p>
-          <p class="value small">{activeTask ? activeTask.title : "无"}</p>
-        </div>
-      </aside>
-
-      <aside class="panel side-panel switch-panel">
-        <h2>快速切换任务</h2>
-        {#if recentTasks.length === 0}
-          <p class="empty">暂无可切换任务</p>
-        {:else}
-          <ul class="recent-list">
-            {#each recentTasks as task (task.id)}
-              <li>
-                <button
-                  type="button"
-                  class="recent-btn"
-                  class:selected={selectedTask?.id === task.id}
-                  onclick={() => switchToTask(task)}
-                  disabled={!!currentAction}
-                  title={recentTaskTooltip(task)}
-                >
-                  <span class="recent-title-row">
-                    <span class="recent-title">{task.title}</span>
-                    <span class="recent-action">切换并开始</span>
-                  </span>
-                  <span class="recent-meta">{recentTaskMeta(task)}</span>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </aside>
-    </section>
   </section>
 
   {#if restSuggestion}
@@ -393,19 +322,10 @@
     font-size: 0.9rem;
   }
 
-  .timer-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
-    gap: 0.95rem;
+  .timer-main {
+    display: flex;
+    flex-direction: column;
     flex: 1;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .side-column {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 0.95rem;
     min-height: 0;
     overflow: hidden;
   }
@@ -420,9 +340,11 @@
   .focus-panel {
     display: flex;
     flex-direction: column;
+    flex: 1;
     gap: 0.55rem;
     align-items: center;
     text-align: center;
+    height: 100%;
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
@@ -458,140 +380,21 @@
     justify-content: center;
   }
 
-  .subtask-form {
+  .timer-command {
     width: min(680px, 100%);
-    margin-top: 0.7rem;
+    margin-top: 0.5rem;
     border-top: 1px dashed #c1d4ee;
     padding-top: 0.74rem;
     display: flex;
     flex-direction: column;
-    gap: 0.42rem;
+    gap: 0.5rem;
     text-align: left;
   }
 
-  .subtask-form label {
-    font-size: 0.87rem;
-    font-weight: 600;
-    color: #23496f;
-  }
-
-  .subtask-row {
-    display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-  }
-
-  .subtask-row input {
-    flex: 1;
-    min-width: 220px;
-  }
-
-  .side-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    min-height: 0;
-    overflow: auto;
-    overscroll-behavior: contain;
-  }
-
-  .metrics-panel h2,
-  .switch-panel h2 {
+  .timer-command h2 {
     margin: 0;
     font-size: 1rem;
     color: #173c68;
-  }
-
-  .metric {
-    border: 1px solid #c7d8ee;
-    background: #f7fbff;
-    border-radius: 0.8rem;
-    padding: 0.62rem 0.7rem;
-  }
-
-  .label {
-    margin: 0;
-    font-size: 0.81rem;
-    color: #4d6f95;
-  }
-
-  .value {
-    margin: 0.2rem 0 0;
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: #183d69;
-  }
-
-  .value.small {
-    font-size: 0.95rem;
-    line-height: 1.3;
-  }
-
-  .recent-list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .recent-list li {
-    display: block;
-  }
-
-  .recent-btn {
-    text-align: left;
-    border: 1px solid #c7d8f0;
-    background: #f8fbff;
-    color: #1e3e67;
-    border-radius: 0.64rem;
-    padding: 0.45rem 0.55rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-    width: 100%;
-    transition: border-color 120ms ease, background 120ms ease;
-  }
-
-  .recent-btn.selected {
-    border-color: #1f4f92;
-    background: #eaf2ff;
-  }
-
-  .recent-btn:hover,
-  .recent-btn:focus-visible {
-    border-color: #7598c8;
-    background: #f1f7ff;
-  }
-
-  .recent-title-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
-    align-items: baseline;
-  }
-
-  .recent-title {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: inherit;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .recent-action {
-    font-size: 0.78rem;
-    color: inherit;
-    white-space: nowrap;
-    opacity: 0.86;
-  }
-
-  .recent-meta {
-    font-size: 0.8rem;
-    color: #4b6e96;
   }
 
   .suggestion {
@@ -619,8 +422,7 @@
     line-height: 1.34;
   }
 
-  button,
-  input {
+  button {
     font: inherit;
   }
 
@@ -644,17 +446,9 @@
     border-color: #8b2a2a;
   }
 
-  button:disabled,
-  input:disabled {
+  button:disabled {
     opacity: 0.56;
     cursor: not-allowed;
-  }
-
-  input {
-    border-radius: 0.62rem;
-    border: 1px solid #8cafd7;
-    padding: 0.5rem 0.62rem;
-    background: #fff;
   }
 
   .error {
@@ -679,26 +473,14 @@
       overflow: visible;
     }
 
-    .timer-grid {
+    .timer-main {
       flex: 0 0 auto;
       min-height: fit-content;
       overflow: visible;
     }
 
-    .side-column {
+    .focus-panel {
       overflow: visible;
-      grid-template-rows: auto auto;
-    }
-
-    .focus-panel,
-    .side-panel {
-      overflow: visible;
-    }
-  }
-
-  @media (max-width: 1080px) {
-    .timer-grid {
-      grid-template-columns: 1fr;
     }
   }
 
