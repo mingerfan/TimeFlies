@@ -32,6 +32,7 @@
   };
 
   let overview = $state<OverviewResponse | null>(null);
+  let dayOverview = $state<OverviewResponse | null>(null);
   let selectedTaskId = $state<string | null>(null);
   let loading = $state(false);
   let currentAction = $state("");
@@ -127,6 +128,37 @@
     return activeTask.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
   });
 
+  const activeInclusiveSeconds = $derived.by(() => {
+    if (!activeTask) return 0;
+    if (activeTask.status !== "running" || !overview) {
+      return activeTask.inclusive_seconds;
+    }
+    return activeTask.inclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
+
+  const timerElapsedSeconds = $derived.by(() => {
+    const task = heroControlTask;
+    if (!task) return 0;
+    if (task.status !== "running" || !overview) {
+      return task.exclusive_seconds;
+    }
+    return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
+
+  const dayActiveLiveDelta = $derived.by(() => {
+    const snapshot = dayOverview;
+    if (!snapshot || !snapshot.active_task_id) return 0;
+    const running = snapshot.tasks.find((task) => task.id === snapshot.active_task_id);
+    if (!running || running.status !== "running") return 0;
+    return Math.max(0, nowTs - snapshot.generated_at);
+  });
+
+  const todayFocusedSeconds = $derived.by(() => {
+    if (!dayOverview) return 0;
+    const base = dayOverview.tasks.reduce((sum, task) => sum + task.exclusive_seconds, 0);
+    return base + dayActiveLiveDelta;
+  });
+
   const commandContextHints = $derived.by(() => {
     if (!selectedTask) {
       return [
@@ -174,13 +206,14 @@
     loading = true;
     errorMessage = "";
     try {
-      const snapshot = await getOverview("week");
-      overview = snapshot;
-      if (selectedTaskId && !snapshot.tasks.some((task) => task.id === selectedTaskId)) {
+      const [weekSnapshot, daySnapshot] = await Promise.all([getOverview("week"), getOverview("day")]);
+      overview = weekSnapshot;
+      dayOverview = daySnapshot;
+      if (selectedTaskId && !weekSnapshot.tasks.some((task) => task.id === selectedTaskId)) {
         selectedTaskId = null;
       }
       if (!selectedTaskId) {
-        selectedTaskId = snapshot.active_task_id ?? snapshot.tasks[0]?.id ?? null;
+        selectedTaskId = weekSnapshot.active_task_id ?? weekSnapshot.tasks[0]?.id ?? null;
       }
     } catch (error) {
       errorMessage = normalizeError(error);
@@ -329,31 +362,18 @@
       {#if activeTask}
         <h1>{activeTask.title}</h1>
         <p class="hero-meta">路径 {activeTaskPath || "-"} · {statusLabel(activeTask.status)}</p>
-        <p class="hero-time">当前任务已用 {formatClock(activeElapsedSeconds)}</p>
+        <p class="hero-stats">
+          Ex {formatSeconds(activeElapsedSeconds)} · In {formatSeconds(activeInclusiveSeconds)}
+        </p>
       {:else}
         <h1>暂无活动任务</h1>
-        <p class="hero-meta">请在右侧 mini 任务树中开始一个任务</p>
+        <p class="hero-meta">请在右侧任务树中开始一个任务</p>
       {/if}
     </div>
     <div class="hero-actions">
       <a href="/tree" class="ghost-link">打开任务树工作区</a>
       <button type="button" class="secondary" onclick={refresh} disabled={loading || !!currentAction}>
         {loading ? "刷新中..." : "刷新"}
-      </button>
-      <button type="button" onclick={onPrimaryToggle} disabled={!heroControlTask || !!currentAction}>
-        {heroControlTask?.status === "running"
-          ? "暂停"
-          : heroControlTask?.status === "paused"
-            ? "恢复"
-            : "开始"}
-      </button>
-      <button
-        type="button"
-        class="danger"
-        onclick={onStopSelected}
-        disabled={!heroControlTask || !!currentAction}
-      >
-        停止
       </button>
     </div>
   </header>
@@ -363,84 +383,91 @@
   {/if}
 
   <section class="content-grid">
-    <article class="panel detail-main">
-      {#if selectedTask}
-        <section class="detail-top">
-          <p class="detail-title">{selectedTask.title}</p>
-          <p class="meta">
-            创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(selectedTask.exclusive_seconds)} · In
-            {formatSeconds(selectedTask.inclusive_seconds)}
+    <section class="main-stack">
+      <article class="panel session-panel">
+        <div class="session-head">
+          <h2>会话计时器</h2>
+          <p>今日已专注 {formatSeconds(todayFocusedSeconds)}</p>
+        </div>
+        {#if heroControlTask}
+          <p class="session-target">{heroControlTask.title}</p>
+          <p class="session-meta">
+            状态 {statusLabel(heroControlTask.status)} · Ex {formatSeconds(timerElapsedSeconds)} · In
+            {formatSeconds(heroControlTask.inclusive_seconds)}
           </p>
-        </section>
-      {:else}
-        <section class="detail-top">
-          <p class="empty">暂无选中任务，可在右侧 mini 树选择或新建。</p>
-        </section>
-      {/if}
+          <p class="session-clock">{formatClock(timerElapsedSeconds)}</p>
+          <div class="session-actions">
+            <button type="button" onclick={onPrimaryToggle} disabled={!!currentAction}>
+              {heroControlTask.status === "running"
+                ? "暂停"
+                : heroControlTask.status === "paused"
+                  ? "恢复"
+                  : "开始"}
+            </button>
+            <button
+              type="button"
+              class="danger"
+              onclick={onStopSelected}
+              disabled={!!currentAction || (heroControlTask.status !== "running" && heroControlTask.status !== "paused")}
+            >
+              停止
+            </button>
+          </div>
+        {:else}
+          <p class="session-clock">{formatClock(todayFocusedSeconds)}</p>
+          <p class="empty">暂无可操控任务，可先在右侧任务树中选择一个任务。</p>
+        {/if}
+      </article>
 
-      <section class="detail-command">
-        <h2>命令模式</h2>
-        <p class="meta">
-          当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
-          {#if activeTask && selectedTask && activeTask.id !== selectedTask.id}
-            （点击上方主工作台可切换为活动任务）
-          {/if}
-        </p>
-        <CommandBar
-          bind:value={commandInput}
-          busy={loading || !!currentAction}
-          feedback={commandFeedback}
-          tone={commandFeedbackTone}
-          onexecute={onCommandExecute}
-        />
-      </section>
+      <article class="panel detail-main">
+        {#if selectedTask}
+          <section class="detail-top">
+            <p class="detail-title">{selectedTask.title}</p>
+            <p class="meta">
+              创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(selectedTask.exclusive_seconds)} · In
+              {formatSeconds(selectedTask.inclusive_seconds)}
+            </p>
+          </section>
+        {:else}
+          <section class="detail-top">
+            <p class="empty">暂无选中任务，可在右侧 mini 树选择或新建。</p>
+          </section>
+        {/if}
 
-      <section class="detail-guide">
-        <div class="guide-head">
-          <h2>命令速查</h2>
-          <p class="meta">支持 `/rename`、`/parent`、`/start`、`/pause`、`/resume`、`/stop`、`/sub`</p>
-        </div>
-        <div class="guide-grid">
-          <article class="guide-card">
-            <p class="guide-cmd">/rename 新标题</p>
-            <p class="guide-desc">重命名当前选中任务</p>
-          </article>
-          <article class="guide-card">
-            <p class="guide-cmd">/parent root</p>
-            <p class="guide-desc">将当前任务提升为根任务</p>
-          </article>
-          <article class="guide-card">
-            <p class="guide-cmd">/parent 任务ID</p>
-            <p class="guide-desc">将当前任务挂到指定父任务下</p>
-          </article>
-          <article class="guide-card">
-            <p class="guide-cmd">/start | /pause | /resume | /stop</p>
-            <p class="guide-desc">控制当前任务状态机</p>
-          </article>
-          <article class="guide-card">
-            <p class="guide-cmd">/sub 子任务标题</p>
-            <p class="guide-desc">在当前任务下创建子任务（运行中则插入并开始）</p>
-          </article>
-          <article class="guide-card">
-            <p class="guide-cmd">写周报 #work #writing</p>
-            <p class="guide-desc">纯文本创建任务并追加标签</p>
-          </article>
-        </div>
-        <ul class="guide-context">
-          {#each commandContextHints as hint}
-            <li>{hint}</li>
-          {/each}
-        </ul>
-      </section>
-    </article>
+        <section class="detail-command">
+          <h2>命令模式</h2>
+          <p class="meta">
+            当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
+            {#if activeTask && selectedTask && activeTask.id !== selectedTask.id}
+              （点击上方主工作台可切换为活动任务）
+            {/if}
+          </p>
+          <CommandBar
+            bind:value={commandInput}
+            busy={loading || !!currentAction}
+            feedback={commandFeedback}
+            tone={commandFeedbackTone}
+            onexecute={onCommandExecute}
+          />
+          <ul class="command-hints">
+            {#each commandContextHints as hint}
+              <li>{hint}</li>
+            {/each}
+          </ul>
+        </section>
+      </article>
+    </section>
 
     <aside class="side-rail">
-      <article class="panel mini-timer">
-        <h2>Mini 计时器</h2>
+      <article class="panel today-focus-panel">
+        <div class="today-head">
+          <h2>今日已专注</h2>
+          <p>{formatSeconds(todayFocusedSeconds)}</p>
+        </div>
+        <p class="today-clock">{formatClock(todayFocusedSeconds)}</p>
         {#if activeTask}
-          <p class="mini-title">{activeTask.title}</p>
-          <p class="mini-meta">{statusLabel(activeTask.status)}</p>
-          <p class="mini-clock">{formatClock(activeElapsedSeconds)}</p>
+          <p class="today-active">{activeTask.title}</p>
+          <p class="today-meta">当前 {statusLabel(activeTask.status)} · Ex {formatSeconds(activeElapsedSeconds)}</p>
         {:else}
           <p class="empty">暂无进行中的任务</p>
         {/if}
@@ -549,11 +576,10 @@
     font-size: 0.9rem;
   }
 
-  .hero-time {
+  .hero-stats {
     margin: 0.25rem 0 0;
-    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
-    font-size: 1.05rem;
-    color: #143d67;
+    color: #36587f;
+    font-size: 0.9rem;
   }
 
   .hero-actions {
@@ -574,11 +600,19 @@
 
   .content-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-columns: minmax(0, 1fr) 386px;
     gap: 1rem;
     align-items: stretch;
     flex: 1;
     height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .main-stack {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 1rem;
     min-height: 0;
     overflow: hidden;
   }
@@ -590,9 +624,15 @@
     padding: 0.9rem;
   }
 
+  .session-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
   .detail-main {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0.8rem;
     height: 100%;
     min-height: 0;
@@ -601,8 +641,7 @@
   }
 
   .detail-top,
-  .detail-command,
-  .detail-guide {
+  .detail-command {
     border-top: 1px dashed #bfd2ef;
     padding-top: 0.72rem;
   }
@@ -624,6 +663,57 @@
     font-size: 0.96rem;
   }
 
+  .session-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+
+  .session-head h2 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .session-head p {
+    margin: 0;
+    color: #3d5f86;
+    font-size: 0.84rem;
+  }
+
+  .session-target {
+    margin: 0;
+    font-size: 1.06rem;
+    font-weight: 700;
+    color: #173b68;
+    line-height: 1.3;
+  }
+
+  .session-meta {
+    margin: 0;
+    color: #4b6b92;
+    font-size: 0.86rem;
+    line-height: 1.35;
+  }
+
+  .session-clock {
+    margin: 0.12rem 0 0.08rem;
+    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+    font-size: clamp(2rem, 4.2vw, 3.05rem);
+    color: #174371;
+    line-height: 1.04;
+  }
+
+  .session-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
+  .session-actions button {
+    flex: 1 1 120px;
+  }
+
   .meta,
   .empty {
     margin: 0;
@@ -632,61 +722,15 @@
     line-height: 1.35;
   }
 
-  .detail-guide {
-    display: flex;
-    flex-direction: column;
-    gap: 0.56rem;
+  .detail-command {
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    padding-right: 0.16rem;
+    padding-right: 0.14rem;
   }
 
-  .guide-head {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .guide-head h2 {
-    margin-bottom: 0;
-  }
-
-  .guide-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.48rem;
-  }
-
-  .guide-card {
-    border: 1px solid #cad9ee;
-    border-radius: 0.68rem;
-    background: #f7fbff;
-    padding: 0.52rem 0.56rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-    min-width: 0;
-  }
-
-  .guide-cmd {
-    margin: 0;
-    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
-    font-size: 0.77rem;
-    color: #1d436d;
-    line-height: 1.32;
-    word-break: break-word;
-  }
-
-  .guide-desc {
-    margin: 0;
-    color: #52749a;
-    font-size: 0.77rem;
-    line-height: 1.34;
-  }
-
-  .guide-context {
-    margin: 0;
+  .command-hints {
+    margin: 0.5rem 0 0;
     padding-left: 1.1rem;
     display: flex;
     flex-direction: column;
@@ -698,44 +742,66 @@
 
   .side-rail {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 3fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 1rem;
     height: 100%;
     min-height: 0;
     overflow: hidden;
   }
 
-  .mini-timer {
+  .today-focus-panel {
+    display: flex;
+    flex-direction: column;
     min-height: 0;
-    overflow: auto;
-    overscroll-behavior: contain;
+    overflow: hidden;
+    gap: 0.45rem;
   }
 
-  .mini-timer h2,
+  .today-focus-panel h2,
   .mini-tree h2 {
-    margin: 0 0 0.4rem;
+    margin: 0 0 0.1rem;
     font-size: 0.95rem;
   }
 
-  .mini-title {
+  .today-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .today-head p {
     margin: 0;
-    font-size: 1rem;
+    color: #3d5f86;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .today-clock {
+    margin: 0;
+    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+    font-size: clamp(1.6rem, 3.4vw, 2.1rem);
+    line-height: 1.1;
+    color: #174371;
+  }
+
+  .today-active {
+    margin: 0;
+    font-size: 0.92rem;
     font-weight: 700;
     color: #173b68;
     line-height: 1.3;
   }
 
-  .mini-clock {
-    margin: 0.2rem 0 0;
-    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
-    font-size: 1.05rem;
-    color: #174371;
-  }
-
-  .mini-meta {
+  .today-meta {
     margin: 0;
     color: #4b6b92;
     font-size: 0.82rem;
+    line-height: 1.35;
+  }
+
+  .mini-tree {
+    min-height: 0;
   }
 
   .mini-tree-head {
@@ -915,15 +981,12 @@
       overflow: visible;
     }
 
+    .main-stack,
     .detail-main,
     .side-rail {
       height: auto;
       grid-template-rows: auto;
       overflow: visible;
-    }
-
-    .guide-grid {
-      grid-template-columns: 1fr;
     }
   }
 
@@ -937,13 +1000,10 @@
       flex-direction: column;
     }
 
+    .main-stack,
     .detail-main {
       height: auto;
       grid-template-rows: auto;
-      overflow: visible;
-    }
-
-    .detail-guide {
       overflow: visible;
     }
 
@@ -951,10 +1011,6 @@
       height: auto;
       grid-template-rows: auto auto;
       overflow: visible;
-    }
-
-    .guide-grid {
-      grid-template-columns: 1fr;
     }
   }
 </style>
