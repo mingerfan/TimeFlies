@@ -2,12 +2,10 @@
   import {
     APP_DATA_CHANGED_EVENT,
     addTagToTask,
-    archiveTask,
     createTask,
     getOverview,
     insertSubtaskAndStart,
     pauseTask,
-    removeTagFromTask,
     renameTask,
     reparentTask,
     resumeTask,
@@ -16,6 +14,9 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
+  import CommandBar from "$lib/components/CommandBar.svelte";
+  import { executeParsedCommand, type CommandFeedbackTone } from "$lib/command/executor";
+  import { parseCommandInput } from "$lib/command/parser";
   import {
     buildTaskChain,
     formatClock,
@@ -35,7 +36,9 @@
     childCount: number;
   };
 
-  const ROOT_PARENT_VALUE = "__ROOT__";
+  type RunActionOptions = {
+    surfaceError?: boolean;
+  };
 
   let overview = $state<OverviewResponse | null>(null);
   let selectedTaskId = $state<string | null>(null);
@@ -44,11 +47,9 @@
   let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
 
-  let quickAddTitle = $state("");
-  let renameTitle = $state("");
-  let reparentTarget = $state(ROOT_PARENT_VALUE);
-  let subtaskTitle = $state("");
-  let newTagName = $state("");
+  let commandInput = $state("");
+  let commandFeedback = $state("");
+  let commandFeedbackTone = $state<CommandFeedbackTone>("success");
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -90,27 +91,6 @@
     buildTaskChain(selectedTask?.id ?? null, taskMap)
       .map((task) => task.title)
       .join(" / ")
-  );
-
-  const blockedParentIds = $derived.by(() => {
-    const blocked = new Set<string>();
-    if (!selectedTask) return blocked;
-    const stack: string[] = [selectedTask.id];
-    while (stack.length > 0) {
-      const id = stack.pop();
-      if (!id || blocked.has(id)) continue;
-      blocked.add(id);
-      for (const child of childrenByParent.get(id) ?? []) {
-        stack.push(child.id);
-      }
-    }
-    return blocked;
-  });
-
-  const reparentCandidates = $derived.by(() =>
-    (overview?.tasks ?? [])
-      .filter((task) => !blockedParentIds.has(task.id))
-      .sort((a, b) => a.created_at - b.created_at)
   );
 
   const miniNodes = $derived.by(() => {
@@ -164,6 +144,31 @@
     return activeTask.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
   });
 
+  const commandContextHints = $derived.by(() => {
+    if (!selectedTask) {
+      return [
+        "先在右侧 Mini 任务树选择目标任务，再执行 /rename、/parent、/sub。",
+        "直接输入纯文本会创建任务；有选中任务时默认创建为它的子任务。",
+        "输入 #tag 会在主动作成功后附加标签，不会阻断主命令执行。",
+      ];
+    }
+
+    const hints = [`当前目标：${selectedTask.title}（${statusLabel(selectedTask.status)}）`];
+    if (selectedTask.status === "running") {
+      hints.push("可用 /sub <title> 直接插入并开始子任务。");
+      hints.push("需要暂时中断可执行 /pause，需要结束当前任务可执行 /stop。");
+    } else if (selectedTask.status === "paused") {
+      hints.push("可用 /resume 恢复，也可执行 /start 直接恢复。");
+    } else {
+      hints.push("可用 /start 开始当前任务。");
+    }
+
+    if (activeTask && activeTask.id !== selectedTask.id) {
+      hints.push(`当前运行中的任务是「${activeTask.title}」，执行 /start 时会自动先暂停它。`);
+    }
+    return hints;
+  });
+
   onMount(() => {
     void refresh();
     const onDataChanged = () => {
@@ -180,17 +185,6 @@
       window.clearInterval(ticker);
       window.clearInterval(poller);
     };
-  });
-
-  $effect(() => {
-    const task = selectedTask;
-    if (!task) {
-      renameTitle = "";
-      reparentTarget = ROOT_PARENT_VALUE;
-      return;
-    }
-    renameTitle = task.title;
-    reparentTarget = task.parent_id ?? ROOT_PARENT_VALUE;
   });
 
   async function refresh() {
@@ -212,27 +206,39 @@
     }
   }
 
-  async function runAction<T>(label: string, action: () => Promise<T>): Promise<T | null> {
+  async function runAction<T>(
+    label: string,
+    action: () => Promise<T>,
+    options: RunActionOptions = {}
+  ): Promise<T | null> {
+    const { surfaceError = true } = options;
     currentAction = label;
-    errorMessage = "";
+    if (surfaceError) {
+      errorMessage = "";
+    }
     try {
       const result = await action();
       await refresh();
       return result;
     } catch (error) {
-      errorMessage = normalizeError(error);
+      if (surfaceError) {
+        errorMessage = normalizeError(error);
+      }
       return null;
     } finally {
       currentAction = "";
     }
   }
 
-  async function ensureSwitchFromActive(targetTaskId: string): Promise<boolean> {
+  async function ensureSwitchFromActive(
+    targetTaskId: string,
+    options: RunActionOptions = {}
+  ): Promise<boolean> {
     const active = activeTask;
     if (!active || active.status !== "running" || active.id === targetTaskId) {
       return true;
     }
-    const paused = await runAction("暂停当前任务", () => pauseTask(active.id));
+    const paused = await runAction("暂停当前任务", () => pauseTask(active.id), options);
     return paused !== null;
   }
 
@@ -286,100 +292,51 @@
     await runAction("开始任务", () => startTask(task.id));
   }
 
-  async function onCreateTask(event: SubmitEvent) {
-    event.preventDefault();
-    const title = quickAddTitle.trim();
-    if (!title) return;
+  async function onCommandExecute(input: string) {
+    errorMessage = "";
+    const parsed = parseCommandInput(input);
+    const result = await executeParsedCommand({
+      parsed,
+      selectedTask,
+      selectedTaskId,
+      activeTask,
+      tasks: overview?.tasks ?? [],
+      run: {
+        createTask: (title, parentId) =>
+          runAction("创建任务", () => createTask(title, parentId), { surfaceError: false }),
+        renameTask: async (taskId, title) =>
+          (await runAction("重命名任务", () => renameTask(taskId, title), { surfaceError: false })) !== null,
+        reparentTask: async (taskId, parentId) =>
+          (await runAction("调整父任务", () => reparentTask(taskId, parentId), { surfaceError: false })) !== null,
+        startTask: async (taskId) =>
+          (await runAction("开始任务", () => startTask(taskId), { surfaceError: false })) !== null,
+        pauseTask: async (taskId) =>
+          (await runAction("暂停任务", () => pauseTask(taskId), { surfaceError: false })) !== null,
+        resumeTask: async (taskId) =>
+          (await runAction("恢复任务", () => resumeTask(taskId), { surfaceError: false })) !== null,
+        stopTask: async (taskId) =>
+          (await runAction("停止任务", () => stopTask(taskId), { surfaceError: false })) !== null,
+        insertSubtaskAndStart: (parentTaskId, title) =>
+          runAction("插入子任务", () => insertSubtaskAndStart(parentTaskId, title), {
+            surfaceError: false,
+          }),
+        addTagToTask: async (taskId, tagName) =>
+          (await runAction(`添加标签 #${tagName}`, () => addTagToTask(taskId, tagName), {
+            surfaceError: false,
+          })) !== null,
+      },
+      ensureSwitchFromActive: (targetTaskId) =>
+        ensureSwitchFromActive(targetTaskId, { surfaceError: false }),
+      selectTask: (taskId) => {
+        selectedTaskId = taskId;
+      },
+    });
 
-    const parentId = selectedTaskId;
-    const createdTaskId = await runAction("快速创建任务", () => createTask(title, parentId));
-    if (!createdTaskId) return;
-
-    selectedTaskId = createdTaskId;
-    quickAddTitle = "";
-  }
-
-  async function onCreateTaskAndStart() {
-    const title = quickAddTitle.trim();
-    if (!title) return;
-
-    if (selectedTask?.status === "running") {
-      const childId = await runAction("插入子任务", () =>
-        insertSubtaskAndStart(selectedTask.id, title)
-      );
-      if (!childId) return;
-      selectedTaskId = childId;
-      quickAddTitle = "";
-      return;
+    commandFeedback = result.message;
+    commandFeedbackTone = result.tone;
+    if (result.clearInput) {
+      commandInput = "";
     }
-
-    const parentId = selectedTaskId;
-    const createdTaskId = await runAction("快速创建任务", () => createTask(title, parentId));
-    if (!createdTaskId) return;
-    selectedTaskId = createdTaskId;
-    quickAddTitle = "";
-
-    if (!(await ensureSwitchFromActive(createdTaskId))) return;
-    await runAction("开始任务", () => startTask(createdTaskId));
-  }
-
-  function onQuickAddKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      quickAddTitle = "";
-      return;
-    }
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void onCreateTaskAndStart();
-    }
-  }
-
-  async function onRenameTask(event: SubmitEvent) {
-    event.preventDefault();
-    if (!selectedTask) return;
-    const title = renameTitle.trim();
-    if (!title) return;
-    await runAction("重命名任务", () => renameTask(selectedTask.id, title));
-  }
-
-  async function onReparentTask(event: SubmitEvent) {
-    event.preventDefault();
-    if (!selectedTask) return;
-    const targetParentId = reparentTarget === ROOT_PARENT_VALUE ? null : reparentTarget;
-    if (targetParentId === selectedTask.parent_id) return;
-    await runAction("调整父任务", () => reparentTask(selectedTask.id, targetParentId));
-  }
-
-  async function onArchiveTask() {
-    if (!selectedTask) return;
-    const confirmed = window.confirm(`确认归档任务「${selectedTask.title}」及其全部子任务吗？`);
-    if (!confirmed) return;
-    await runAction("归档任务", () => archiveTask(selectedTask.id));
-  }
-
-  async function onInsertSubtask(event: SubmitEvent) {
-    event.preventDefault();
-    if (!selectedTask || selectedTask.status !== "running") return;
-    const title = subtaskTitle.trim();
-    if (!title) return;
-    const taskId = await runAction("插入子任务", () => insertSubtaskAndStart(selectedTask.id, title));
-    if (!taskId) return;
-    subtaskTitle = "";
-    selectedTaskId = taskId;
-  }
-
-  async function onAddTag(event: SubmitEvent) {
-    event.preventDefault();
-    if (!selectedTask) return;
-    const tagName = newTagName.trim();
-    if (!tagName) return;
-    await runAction("添加标签", () => addTagToTask(selectedTask.id, tagName));
-    newTagName = "";
-  }
-
-  async function onRemoveTag(tagName: string) {
-    if (!selectedTask) return;
-    await runAction("删除标签", () => removeTagFromTask(selectedTask.id, tagName));
   }
 </script>
 
@@ -433,94 +390,59 @@
             {formatSeconds(selectedTask.inclusive_seconds)}
           </p>
         </section>
-
-        <section class="detail-block">
-          <h2>结构与基础操作</h2>
-          <form class="inline-form" onsubmit={onRenameTask}>
-            <input type="text" bind:value={renameTitle} placeholder="任务名称" disabled={!!currentAction} />
-            <button type="submit" disabled={!!currentAction || !renameTitle.trim()}>重命名</button>
-          </form>
-
-          <form class="inline-form" onsubmit={onReparentTask}>
-            <select bind:value={reparentTarget} disabled={!!currentAction}>
-              <option value={ROOT_PARENT_VALUE}>设为根任务</option>
-              {#each reparentCandidates as candidate (candidate.id)}
-                <option value={candidate.id}>{candidate.title}</option>
-              {/each}
-            </select>
-            <button type="submit" disabled={!!currentAction}>调整父任务</button>
-          </form>
-
-          <button type="button" class="subtle-danger" onclick={onArchiveTask} disabled={!!currentAction}>
-            归档当前任务子树
-          </button>
-        </section>
-
-        <section class="detail-block">
-          <h2>标签</h2>
-          <div class="tags">
-            {#if selectedTask.tags.length === 0}
-              <span class="muted">暂无标签</span>
-            {:else}
-              {#each selectedTask.tags as tag}
-                <button type="button" class="tag" onclick={() => onRemoveTag(tag)} disabled={!!currentAction}>
-                  #{tag} ×
-                </button>
-              {/each}
-            {/if}
-          </div>
-          <form class="inline-form" onsubmit={onAddTag}>
-            <input type="text" bind:value={newTagName} placeholder="新标签" disabled={!!currentAction} />
-            <button type="submit" disabled={!!currentAction || !newTagName.trim()}>添加标签</button>
-          </form>
-        </section>
-
-        <section class="detail-block">
-          <h2>运行中插入子任务</h2>
-          <form class="inline-form" onsubmit={onInsertSubtask}>
-            <input
-              type="text"
-              bind:value={subtaskTitle}
-              placeholder="子任务标题"
-              disabled={selectedTask.status !== "running" || !!currentAction}
-            />
-            <button type="submit" disabled={selectedTask.status !== "running" || !!currentAction || !subtaskTitle.trim()}>
-              插入并开始
-            </button>
-          </form>
-        </section>
       {:else}
         <section class="detail-top">
           <p class="empty">暂无选中任务，可在右侧 mini 树选择或新建。</p>
         </section>
       {/if}
 
-      <section class="quick-add">
-        <form class="quick-form" onsubmit={onCreateTask}>
-          <label for="quick-add-input">快速添加任务</label>
-          <input
-            id="quick-add-input"
-            type="text"
-            bind:value={quickAddTitle}
-            onkeydown={onQuickAddKeydown}
-            placeholder={selectedTaskId ? "默认创建为当前任务子任务" : "默认创建根任务"}
-            disabled={loading || !!currentAction}
-          />
-          <div class="quick-actions">
-            <button type="submit" disabled={loading || !!currentAction || !quickAddTitle.trim()}>
-              创建
-            </button>
-            <button
-              type="button"
-              class="secondary"
-              onclick={onCreateTaskAndStart}
-              disabled={loading || !!currentAction || !quickAddTitle.trim()}
-            >
-              创建并开始
-            </button>
-          </div>
-          <p class="hint">Enter 创建，Ctrl+Enter 创建并开始，Esc 清空。</p>
-        </form>
+      <section class="detail-command">
+        <h2>命令模式</h2>
+        <CommandBar
+          bind:value={commandInput}
+          busy={loading || !!currentAction}
+          feedback={commandFeedback}
+          tone={commandFeedbackTone}
+          onexecute={onCommandExecute}
+        />
+      </section>
+
+      <section class="detail-guide">
+        <div class="guide-head">
+          <h2>命令速查</h2>
+          <p class="meta">支持 `/rename`、`/parent`、`/start`、`/pause`、`/resume`、`/stop`、`/sub`</p>
+        </div>
+        <div class="guide-grid">
+          <article class="guide-card">
+            <p class="guide-cmd">/rename 新标题</p>
+            <p class="guide-desc">重命名当前选中任务</p>
+          </article>
+          <article class="guide-card">
+            <p class="guide-cmd">/parent root</p>
+            <p class="guide-desc">将当前任务提升为根任务</p>
+          </article>
+          <article class="guide-card">
+            <p class="guide-cmd">/parent 任务ID</p>
+            <p class="guide-desc">将当前任务挂到指定父任务下</p>
+          </article>
+          <article class="guide-card">
+            <p class="guide-cmd">/start | /pause | /resume | /stop</p>
+            <p class="guide-desc">控制当前任务状态机</p>
+          </article>
+          <article class="guide-card">
+            <p class="guide-cmd">/sub 子任务标题</p>
+            <p class="guide-desc">在当前任务下创建子任务（运行中则插入并开始）</p>
+          </article>
+          <article class="guide-card">
+            <p class="guide-cmd">写周报 #work #writing</p>
+            <p class="guide-desc">纯文本创建任务并追加标签</p>
+          </article>
+        </div>
+        <ul class="guide-context">
+          {#each commandContextHints as hint}
+            <li>{hint}</li>
+          {/each}
+        </ul>
       </section>
     </article>
 
@@ -657,8 +579,9 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 340px;
     gap: 1rem;
-    align-items: start;
+    align-items: stretch;
     flex: 1;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
   }
@@ -671,17 +594,18 @@
   }
 
   .detail-main {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
     gap: 0.8rem;
+    height: 100%;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     overscroll-behavior: contain;
   }
 
   .detail-top,
-  .detail-block,
-  .quick-add {
+  .detail-command,
+  .detail-guide {
     border-top: 1px dashed #bfd2ef;
     padding-top: 0.72rem;
   }
@@ -704,7 +628,6 @@
   }
 
   .meta,
-  .muted,
   .empty {
     margin: 0;
     color: #4d6c91;
@@ -712,55 +635,80 @@
     line-height: 1.35;
   }
 
-  .inline-form {
-    margin-top: 0.52rem;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.44rem;
-  }
-
-  .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.42rem;
-  }
-
-  .tag {
-    border-radius: 999px;
-    border: 1px solid #a3bedf;
-    background: #edf4ff;
-    color: #2b547f;
-    padding: 0.2rem 0.52rem;
-  }
-
-  .quick-form {
+  .detail-guide {
     display: flex;
     flex-direction: column;
-    gap: 0.52rem;
+    gap: 0.56rem;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.16rem;
   }
 
-  .quick-form label {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: #1f4672;
-  }
-
-  .quick-actions {
+  .guide-head {
     display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 0.25rem;
   }
 
-  .hint {
+  .guide-head h2 {
+    margin-bottom: 0;
+  }
+
+  .guide-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.48rem;
+  }
+
+  .guide-card {
+    border: 1px solid #cad9ee;
+    border-radius: 0.68rem;
+    background: #f7fbff;
+    padding: 0.52rem 0.56rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    min-width: 0;
+  }
+
+  .guide-cmd {
     margin: 0;
+    font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
     font-size: 0.77rem;
-    color: #4c6f96;
+    color: #1d436d;
+    line-height: 1.32;
+    word-break: break-word;
+  }
+
+  .guide-desc {
+    margin: 0;
+    color: #52749a;
+    font-size: 0.77rem;
+    line-height: 1.34;
+  }
+
+  .guide-context {
+    margin: 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.32rem;
+    color: #48698f;
+    font-size: 0.82rem;
+    line-height: 1.35;
   }
 
   .side-rail {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 3fr);
     gap: 1rem;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .mini-timer {
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
@@ -810,7 +758,9 @@
   .mini-tree {
     display: flex;
     flex-direction: column;
+    height: 100%;
     min-height: 0;
+    overflow: hidden;
   }
 
   .mini-list {
@@ -820,8 +770,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
+    flex: 1;
     min-height: 0;
-    max-height: min(48dvh, 420px);
+    max-height: none;
     padding-right: 0.15rem;
     overflow: auto;
     overscroll-behavior: contain;
@@ -915,19 +866,8 @@
     pointer-events: none;
   }
 
-  button,
-  input,
-  select {
+  button {
     font: inherit;
-  }
-
-  input,
-  select {
-    min-width: 8rem;
-    border-radius: 0.62rem;
-    border: 1px solid #8cafd7;
-    padding: 0.5rem 0.62rem;
-    background: #fff;
   }
 
   button {
@@ -950,15 +890,7 @@
     border-color: #8b2a2a;
   }
 
-  button.subtle-danger {
-    border-color: #c87373;
-    background: #ffecec;
-    color: #7f1f1f;
-  }
-
-  button:disabled,
-  input:disabled,
-  select:disabled {
+  button:disabled {
     opacity: 0.56;
     cursor: not-allowed;
   }
@@ -981,13 +913,20 @@
 
     .content-grid {
       flex: 0 0 auto;
+      height: auto;
       min-height: fit-content;
       overflow: visible;
     }
 
     .detail-main,
     .side-rail {
+      height: auto;
+      grid-template-rows: auto;
       overflow: visible;
+    }
+
+    .guide-grid {
+      grid-template-columns: 1fr;
     }
   }
 
@@ -999,6 +938,26 @@
 
     .hero {
       flex-direction: column;
+    }
+
+    .detail-main {
+      height: auto;
+      grid-template-rows: auto;
+      overflow: visible;
+    }
+
+    .detail-guide {
+      overflow: visible;
+    }
+
+    .side-rail {
+      height: auto;
+      grid-template-rows: auto auto;
+      overflow: visible;
+    }
+
+    .guide-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

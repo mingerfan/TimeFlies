@@ -561,13 +561,22 @@
       {/if}
     </div>
     <div class="selection-actions">
-      <a href="/" class="ghost-link">打开任务详情页</a>
-      <button type="button" onclick={onPrimarySelectedToggle} disabled={!selectedTask || !!currentAction}>
+      <button type="button" class="action-btn action-secondary" onclick={() => window.location.href = '/'}>
+        打开任务详情页
+      </button>
+      <button type="button" class="action-btn action-primary" onclick={onPrimarySelectedToggle} disabled={!selectedTask || !!currentAction}>
         {selectedTask ? primaryActionLabel(selectedTask) : "开始"}
       </button>
-      <details class="more-actions">
-        <summary>更多操作</summary>
-        <div class="more-actions-menu">
+      <div class="more-actions-wrapper">
+        <button type="button" class="action-btn action-subtle" onclick={(e) => {
+          const details = e.currentTarget.closest('.more-actions-wrapper').querySelector('details');
+          details.open = !details.open;
+        }}>
+          更多操作
+        </button>
+        <details class="more-actions">
+          <summary style="display: none;"></summary>
+          <div class="more-actions-menu">
           <button type="button" class="secondary" onclick={onStopSelected} disabled={!selectedTask || !!currentAction}>
             停止
           </button>
@@ -588,10 +597,11 @@
             删除（硬）
           </button>
         </div>
-      </details>
+        </details>
+      </div>
       <button
         type="button"
-        class="subtle-danger"
+        class="action-btn action-danger"
         class:active={batchMode}
         onclick={toggleBatchMode}
         disabled={!overview?.tasks.length || !!currentAction}
@@ -847,58 +857,31 @@
   }
 
   .selection-actions > button,
-  .selection-actions > .ghost-link,
-  .selection-actions > .more-actions > summary {
+  .selection-actions > div > button.action-btn {
     min-width: 7.2rem;
-    text-align: center;
   }
 
-  .selection-actions > button,
-  .selection-actions > .ghost-link {
-    display: inline-flex;
-    justify-content: center;
-    align-items: center;
-  }
-
-  .selection-actions > .active {
+  .selection-actions > .active,
+  .action-btn.active {
     border-color: #b46868;
     background: #ffecec;
     color: #7f1f1f;
   }
 
-  .ghost-link {
-    text-decoration: none;
-    color: #2f5688;
-    border: 1px solid #99b5da;
-    border-radius: 0.62rem;
-    background: #f1f6ff;
-    padding: 0.46rem 0.66rem;
-    font-size: 0.88rem;
-  }
-
-  .more-actions {
+  .more-actions-wrapper {
     position: relative;
   }
 
-  .more-actions summary {
-    list-style: none;
-    border: 1px solid #2f629f;
-    border-radius: 0.62rem;
-    background: #f2f7ff;
-    color: #2f629f;
-    padding: 0.48rem 0.66rem;
-    cursor: pointer;
-    font-size: 0.86rem;
-    user-select: none;
+  .more-actions-wrapper details {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 0.35rem;
+    all: revert;
   }
 
-  .more-actions summary::-webkit-details-marker {
+  .more-actions-wrapper details summary {
     display: none;
-  }
-
-  .more-actions[open] summary {
-    border-color: #1f4f92;
-    background: #e8f1ff;
   }
 
   .more-actions-menu {
@@ -1218,7 +1201,66 @@
     background: #2f629f;
     color: #fff;
     padding: 0.5rem 0.72rem;
+    font-size: 0.86rem;
     cursor: pointer;
+  }
+
+  .action-btn {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    min-width: 7.2rem;
+  }
+
+  .action-primary {
+    border-color: #2f629f;
+    background: #2f629f;
+    color: #fff;
+  }
+
+  .action-primary:hover:not(:disabled) {
+    background: #1f4f92;
+    border-color: #1f4f92;
+  }
+
+  .action-secondary {
+    border-color: #99b5da;
+    background: #f1f6ff;
+    color: #2f5688;
+  }
+
+  .action-secondary:hover:not(:disabled) {
+    background: #e8f1ff;
+    border-color: #7aa3d5;
+  }
+
+  .action-subtle {
+    border-color: #d0d7de;
+    background: #ffffff;
+    color: #374151;
+  }
+
+  .action-subtle:hover:not(:disabled) {
+    background: #f3f4f6;
+    border-color: #9aa4b2;
+  }
+
+  .action-danger {
+    border-color: #c87373;
+    background: #ffecec;
+    color: #7f1f1f;
+  }
+
+  .action-danger:hover:not(:disabled) {
+    background: #ffe0e0;
+    border-color: #b46868;
+  }
+
+  .action-danger.active {
+    background: #8b2a2a;
+    border-color: #8b2a2a;
+    color: #fff;
   }
 
   button.secondary {
