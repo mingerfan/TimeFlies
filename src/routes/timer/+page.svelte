@@ -101,7 +101,7 @@
     loading = true;
     errorMessage = "";
     try {
-      overview = await getOverview("day");
+      overview = await getOverview("all");
     } catch (error) {
       errorMessage = normalizeError(error);
     } finally {

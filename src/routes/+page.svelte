@@ -124,6 +124,15 @@
     return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
   });
 
+  const timerInclusiveSeconds = $derived.by(() => {
+    const task = heroControlTask;
+    if (!task) return 0;
+    if (task.status !== "running" || !overview) {
+      return task.inclusive_seconds;
+    }
+    return task.inclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
+
   const dayActiveLiveDelta = $derived.by(() => {
     const snapshot = dayOverview;
     if (!snapshot || !snapshot.active_task_id) return 0;
@@ -223,14 +232,14 @@
     loading = true;
     errorMessage = "";
     try {
-      const [weekSnapshot, daySnapshot] = await Promise.all([getOverview("week"), getOverview("day")]);
-      overview = weekSnapshot;
+      const [allSnapshot, daySnapshot] = await Promise.all([getOverview("all"), getOverview("day")]);
+      overview = allSnapshot;
       dayOverview = daySnapshot;
-      if (selectedTaskId && !weekSnapshot.tasks.some((task) => task.id === selectedTaskId)) {
+      if (selectedTaskId && !allSnapshot.tasks.some((task) => task.id === selectedTaskId)) {
         selectedTaskId = null;
       }
       if (!selectedTaskId) {
-        selectedTaskId = weekSnapshot.active_task_id ?? weekSnapshot.tasks[0]?.id ?? null;
+        selectedTaskId = allSnapshot.active_task_id ?? allSnapshot.tasks[0]?.id ?? null;
       }
     } catch (error) {
       errorMessage = normalizeError(error);
@@ -472,13 +481,13 @@
       <article class="panel session-panel">
         <div class="session-head">
           <h2>会话计时器</h2>
-          <p>今日已专注 {formatSeconds(todayFocusedSeconds)}</p>
+          <p>近 24 小时已专注 {formatSeconds(todayFocusedSeconds)}</p>
         </div>
         {#if heroControlTask}
           <p class="session-target">{heroControlTask.title}</p>
           <p class="session-meta">
             状态 {statusLabel(heroControlTask.status)} · Ex {formatSeconds(timerElapsedSeconds)} · In
-            {formatSeconds(heroControlTask.inclusive_seconds)}
+            {formatSeconds(timerInclusiveSeconds)}
           </p>
           <p class="session-clock">{formatClock(timerElapsedSeconds)}</p>
           <div class="session-actions">
@@ -546,7 +555,7 @@
     <aside class="side-rail">
       <article class="panel today-focus-panel">
         <div class="today-head">
-          <h2>今日已专注</h2>
+          <h2>近 24 小时已专注</h2>
           <p>{formatSeconds(todayFocusedSeconds)}</p>
         </div>
         <p class="today-clock">{formatClock(todayFocusedSeconds)}</p>

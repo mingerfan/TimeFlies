@@ -32,6 +32,7 @@
   let loading = $state(false);
   let currentAction = $state("");
   let errorMessage = $state("");
+  let nowTs = $state(Math.floor(Date.now() / 1000));
   let treeQuery = $state("");
   let quickAddTitle = $state("");
   let quickAddAsChild = $state(true);
@@ -83,6 +84,15 @@
       .map((task) => task.title)
       .join(" / ")
   );
+
+  const selectedExclusiveSeconds = $derived.by(() => {
+    const task = selectedTask;
+    if (!task) return 0;
+    if (task.status !== "running" || !overview) {
+      return task.exclusive_seconds;
+    }
+    return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
 
   const normalizedTreeQuery = $derived.by(() => treeQuery.trim().toLowerCase());
 
@@ -151,8 +161,12 @@
       void refresh();
     };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    const ticker = window.setInterval(() => {
+      nowTs = Math.floor(Date.now() / 1000);
+    }, 1_000);
     return () => {
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+      window.clearInterval(ticker);
     };
   });
 
@@ -553,7 +567,7 @@
       {#if selectedTask}
         <p class="selected-title">{selectedTask.title}</p>
         <p class="selected-meta">
-          {statusLabel(selectedTask.status)} · {selectedTaskPath} · Ex {formatSeconds(selectedTask.exclusive_seconds)}
+          {statusLabel(selectedTask.status)} · {selectedTaskPath} · Ex {formatSeconds(selectedExclusiveSeconds)}
         </p>
       {:else}
         <p class="selected-title">未选中任务</p>
