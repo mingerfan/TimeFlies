@@ -87,11 +87,13 @@
     overview?.active_task_id ? (taskMap.get(overview.active_task_id) ?? null) : null
   );
 
-  const selectedTaskPath = $derived.by(() =>
-    buildTaskChain(selectedTask?.id ?? null, taskMap)
+  const activeTaskPath = $derived.by(() =>
+    buildTaskChain(activeTask?.id ?? null, taskMap)
       .map((task) => task.title)
       .join(" / ")
   );
+
+  const heroControlTask = $derived.by(() => activeTask ?? selectedTask);
 
   const miniNodes = $derived.by(() => {
     const nodes: MiniNode[] = [];
@@ -124,16 +126,6 @@
       pushNode(root, 0, "root");
     }
     return nodes;
-  });
-
-  const selectedElapsedSeconds = $derived.by(() => {
-    const task = selectedTask;
-    if (!task) return 0;
-    const delta =
-      activeTask && activeTask.id === task.id && activeTask.status === "running" && overview
-        ? Math.max(0, nowTs - overview.generated_at)
-        : 0;
-    return task.exclusive_seconds + delta;
   });
 
   const activeElapsedSeconds = $derived.by(() => {
@@ -243,8 +235,8 @@
   }
 
   async function onPrimaryToggle() {
-    if (!selectedTask) return;
-    const task = selectedTask;
+    const task = heroControlTask;
+    if (!task) return;
     if (task.status === "running") {
       await runAction("暂停任务", () => pauseTask(task.id));
       return;
@@ -259,9 +251,10 @@
   }
 
   async function onStopSelected() {
-    if (!selectedTask) return;
-    if (selectedTask.status !== "running" && selectedTask.status !== "paused") return;
-    await runAction("停止任务", () => stopTask(selectedTask.id));
+    const task = heroControlTask;
+    if (!task) return;
+    if (task.status !== "running" && task.status !== "paused") return;
+    await runAction("停止任务", () => stopTask(task.id));
   }
 
   function nodeActionSymbol(task: TaskRecord): string {
@@ -338,19 +331,41 @@
       commandInput = "";
     }
   }
+
+  function onFocusActiveTask() {
+    if (!activeTask) return;
+    if (selectedTaskId === activeTask.id) return;
+    selectedTaskId = activeTask.id;
+    commandFeedbackTone = "success";
+    commandFeedback = `操控目标已切换为活动任务「${activeTask.title}」`;
+  }
+
+  function onHeroKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onFocusActiveTask();
+  }
 </script>
 
 <main class="detail-screen">
-  <header class="hero">
+  <header
+    class="hero"
+    class:clickable={!!activeTask}
+    role="button"
+    tabindex={activeTask ? 0 : -1}
+    aria-label="聚焦当前活动任务作为操控目标"
+    onclick={onFocusActiveTask}
+    onkeydown={onHeroKeydown}
+  >
     <div>
       <p class="eyebrow">主工作台</p>
-      {#if selectedTask}
-        <h1>{selectedTask.title}</h1>
-        <p class="hero-meta">路径 {selectedTaskPath || "-"} · {statusLabel(selectedTask.status)}</p>
-        <p class="hero-time">当前任务已用 {formatClock(selectedElapsedSeconds)}</p>
+      {#if activeTask}
+        <h1>{activeTask.title}</h1>
+        <p class="hero-meta">路径 {activeTaskPath || "-"} · {statusLabel(activeTask.status)}</p>
+        <p class="hero-time">当前任务已用 {formatClock(activeElapsedSeconds)}</p>
       {:else}
-        <h1>任务详情</h1>
-        <p class="hero-meta">请在右侧 mini 任务树里选择一个任务</p>
+        <h1>暂无活动任务</h1>
+        <p class="hero-meta">请在右侧 mini 任务树中开始一个任务</p>
       {/if}
     </div>
     <div class="hero-actions">
@@ -358,10 +373,10 @@
       <button type="button" class="secondary" onclick={refresh} disabled={loading || !!currentAction}>
         {loading ? "刷新中..." : "刷新"}
       </button>
-      <button type="button" onclick={onPrimaryToggle} disabled={!selectedTask || !!currentAction}>
-        {selectedTask?.status === "running"
+      <button type="button" onclick={onPrimaryToggle} disabled={!heroControlTask || !!currentAction}>
+        {heroControlTask?.status === "running"
           ? "暂停"
-          : selectedTask?.status === "paused"
+          : heroControlTask?.status === "paused"
             ? "恢复"
             : "开始"}
       </button>
@@ -369,7 +384,7 @@
         type="button"
         class="danger"
         onclick={onStopSelected}
-        disabled={!selectedTask || !!currentAction}
+        disabled={!heroControlTask || !!currentAction}
       >
         停止
       </button>
@@ -398,6 +413,12 @@
 
       <section class="detail-command">
         <h2>命令模式</h2>
+        <p class="meta">
+          当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
+          {#if activeTask && selectedTask && activeTask.id !== selectedTask.id}
+            （点击上方主工作台可切换为活动任务）
+          {/if}
+        </p>
         <CommandBar
           bind:value={commandInput}
           busy={loading || !!currentAction}
@@ -530,6 +551,15 @@
     justify-content: space-between;
     gap: 1rem;
     flex-shrink: 0;
+  }
+
+  .hero.clickable {
+    cursor: pointer;
+  }
+
+  .hero.clickable:hover {
+    border-color: rgba(65, 97, 143, 0.42);
+    background: rgba(255, 255, 255, 0.95);
   }
 
   .eyebrow {
