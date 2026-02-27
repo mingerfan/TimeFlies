@@ -95,14 +95,16 @@ pub fn delete_tasks(
         return Ok(());
     }
 
-    if let Some((active_id, active_status)) = find_active_in_subtree(conn, &expanded_ids)? {
+    if let Some((_active_id, active_title, active_status)) =
+        find_active_in_subtree(conn, &expanded_ids)?
+    {
         let action = if hard_delete {
             "hard delete"
         } else {
             "archive"
         };
         return Err(format!(
-            "cannot {action} task {active_id} because it is currently {active_status}"
+            "cannot {action} task \"{active_title}\" because it is currently {active_status}"
         ));
     }
 
@@ -134,9 +136,11 @@ pub fn reparent_task(
     }
 
     let subtree_ids = collect_subtree_ids(conn, &task_id)?;
-    if let Some((active_id, active_status)) = find_active_in_subtree(conn, &subtree_ids)? {
+    if let Some((_active_id, active_title, active_status)) =
+        find_active_in_subtree(conn, &subtree_ids)?
+    {
         return Err(format!(
-            "cannot reparent while task {active_id} is {active_status}; stop or pause transitions first"
+            "cannot reparent while task \"{active_title}\" is {active_status}; stop or pause transitions first"
         ));
     }
 
@@ -1040,20 +1044,20 @@ fn hard_delete_task_ids(tx: &Transaction<'_>, task_ids: &[String]) -> AppResult<
 fn find_active_in_subtree(
     conn: &Connection,
     task_ids: &[String],
-) -> AppResult<Option<(String, String)>> {
+) -> AppResult<Option<(String, String, String)>> {
     for task_id in task_ids {
-        let status: Option<String> = conn
+        let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT status FROM tasks WHERE id = ?1 AND archived_at IS NULL LIMIT 1",
+                "SELECT title, status FROM tasks WHERE id = ?1 AND archived_at IS NULL LIMIT 1",
                 params![task_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(to_error)?;
 
-        if let Some(status) = status {
+        if let Some((title, status)) = row {
             if status == STATUS_RUNNING || status == STATUS_PAUSED {
-                return Ok(Some((task_id.clone(), status)));
+                return Ok(Some((task_id.clone(), title, status)));
             }
         }
     }

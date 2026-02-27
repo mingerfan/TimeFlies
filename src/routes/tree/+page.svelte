@@ -129,16 +129,7 @@
     const roots: string[] = [];
 
     for (const taskId of batchSelectedTaskIds) {
-      let parentId = taskMap.get(taskId)?.parent_id ?? null;
-      let hasSelectedAncestor = false;
-      while (parentId) {
-        if (batchSelectedTaskIds.has(parentId)) {
-          hasSelectedAncestor = true;
-          break;
-        }
-        parentId = taskMap.get(parentId)?.parent_id ?? null;
-      }
-      if (!hasSelectedAncestor) {
+      if (!hasSelectedAncestor(taskId, batchSelectedTaskIds, taskMap)) {
         roots.push(taskId);
       }
     }
@@ -146,14 +137,7 @@
     return roots;
   });
 
-  const batchAffectedCount = $derived.by(() => {
-    if (batchRootTaskIds.length === 0) return 0;
-    const affected = new Set<string>();
-    for (const rootTaskId of batchRootTaskIds) {
-      collectSubtreeTaskIds(rootTaskId, childrenByParent, affected);
-    }
-    return affected.size;
-  });
+  const batchAffectedCount = $derived.by(() => batchSelectedTaskIds.size);
 
   onMount(() => {
     const onDataChanged = () => {
@@ -324,6 +308,7 @@
       `确认${modeLabel}任务「${selectedTask.title}」及其全部子任务吗？\n${warning}`
     );
     if (!confirmed) return;
+    if (!(await ensureDeleteReady([selectedTask.id], hardDelete))) return;
     await runAction(hardDelete ? "硬删除任务" : "删除任务", () =>
       deleteTasks([selectedTask.id], hardDelete)
     );
@@ -434,7 +419,9 @@
 
     batchMode = true;
     if (selectedTaskId) {
-      batchSelectedTaskIds = new Set([selectedTaskId]);
+      const initial = new Set<string>();
+      collectSubtreeTaskIds(selectedTaskId, childrenByParent, initial);
+      batchSelectedTaskIds = initial;
     }
   }
 
@@ -445,9 +432,10 @@
   function onBatchRowChecked(taskId: string, checked: boolean) {
     const next = new Set(batchSelectedTaskIds);
     if (checked) {
-      next.add(taskId);
+      addSubtreeSelections(taskId, next);
     } else {
-      next.delete(taskId);
+      removeSubtreeSelections(taskId, next);
+      removeAncestorSelections(taskId, next, taskMap);
     }
     batchSelectedTaskIds = next;
   }
@@ -463,6 +451,7 @@
       `确认批量${modeLabel}吗？\n已选 ${batchSelectedCount} 个任务，预计影响 ${batchAffectedCount} 个节点。\n${warning}`
     );
     if (!confirmed) return;
+    if (!(await ensureDeleteReady(batchRootTaskIds, hardDelete))) return;
 
     const done = await runAction(hardDelete ? "批量硬删除" : "批量删除", () =>
       deleteTasks(batchRootTaskIds, hardDelete)
@@ -509,6 +498,110 @@
         stack.push(child.id);
       }
     }
+  }
+
+  function addSubtreeSelections(taskId: string, selectedIds: Set<string>) {
+    const descendants = new Set<string>();
+    collectSubtreeTaskIds(taskId, childrenByParent, descendants);
+    for (const id of descendants) {
+      selectedIds.add(id);
+    }
+  }
+
+  function removeSubtreeSelections(taskId: string, selectedIds: Set<string>) {
+    const descendants = new Set<string>();
+    collectSubtreeTaskIds(taskId, childrenByParent, descendants);
+    for (const id of descendants) {
+      selectedIds.delete(id);
+    }
+  }
+
+  function removeAncestorSelections(
+    taskId: string,
+    selectedIds: Set<string>,
+    map: Map<string, TaskRecord>
+  ) {
+    let parentId = map.get(taskId)?.parent_id ?? null;
+    while (parentId) {
+      selectedIds.delete(parentId);
+      parentId = map.get(parentId)?.parent_id ?? null;
+    }
+  }
+
+  function collectSubtreeIdsForRoots(rootIds: string[]): Set<string> {
+    const collector = new Set<string>();
+    for (const rootId of rootIds) {
+      collectSubtreeTaskIds(rootId, childrenByParent, collector);
+    }
+    return collector;
+  }
+
+  function listActiveTasksForRoots(rootIds: string[]): TaskRecord[] {
+    const active: TaskRecord[] = [];
+    const subtreeIds = collectSubtreeIdsForRoots(rootIds);
+    for (const taskId of subtreeIds) {
+      const task = taskMap.get(taskId);
+      if (!task) continue;
+      if (task.status === "running" || task.status === "paused") {
+        active.push(task);
+      }
+    }
+    return active;
+  }
+
+  async function stopTasks(taskIds: string[]): Promise<boolean> {
+    if (taskIds.length === 0) return true;
+    currentAction = "停止任务";
+    errorMessage = "";
+    try {
+      for (const taskId of taskIds) {
+        await stopTask(taskId);
+      }
+      await refresh();
+      return true;
+    } catch (error) {
+      errorMessage = normalizeError(error);
+      return false;
+    } finally {
+      currentAction = "";
+    }
+  }
+
+  function buildActiveTaskPreview(tasks: TaskRecord[]): string {
+    const titles = tasks.slice(0, 3).map((task) => `「${task.title}」`);
+    const preview = titles.join("、");
+    if (tasks.length > 3) {
+      return `如 ${preview} 等`;
+    }
+    return preview;
+  }
+
+  async function ensureDeleteReady(rootIds: string[], hardDelete: boolean): Promise<boolean> {
+    if (rootIds.length === 0) return false;
+    const activeTasks = listActiveTasksForRoots(rootIds);
+    if (activeTasks.length === 0) return true;
+
+    const modeLabel = hardDelete ? "硬删除" : "删除（归档）";
+    const preview = buildActiveTaskPreview(activeTasks);
+    const confirmed = window.confirm(
+      `检测到 ${activeTasks.length} 个任务仍在进行中或已暂停（${preview}）。` +
+        `删除前需要先停止这些任务。是否先停止并继续${modeLabel}？`
+    );
+    if (!confirmed) return false;
+    return await stopTasks(activeTasks.map((task) => task.id));
+  }
+
+  function hasSelectedAncestor(
+    taskId: string,
+    selectedIds: Set<string>,
+    map: Map<string, TaskRecord>
+  ): boolean {
+    let parentId = map.get(taskId)?.parent_id ?? null;
+    while (parentId) {
+      if (selectedIds.has(parentId)) return true;
+      parentId = map.get(parentId)?.parent_id ?? null;
+    }
+    return false;
   }
 
   function flattenTaskRows(
