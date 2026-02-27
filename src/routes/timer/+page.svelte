@@ -251,6 +251,7 @@
             busy={loading || !!currentAction}
             feedback={commandFeedback}
             tone={commandFeedbackTone}
+            tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}
           />
         </section>
