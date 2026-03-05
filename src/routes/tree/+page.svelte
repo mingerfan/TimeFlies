@@ -204,7 +204,8 @@
         selectedTaskId = null;
       }
       if (!selectedTaskId && snapshot.tasks.length > 0) {
-        selectedTaskId = snapshot.active_task_id ?? snapshot.tasks[0].id;
+        selectedTaskId =
+          snapshot.active_task_id ?? snapshot.last_used_task_id ?? snapshot.tasks[0].id;
       }
     } catch (error) {
       errorMessage = normalizeError(error);

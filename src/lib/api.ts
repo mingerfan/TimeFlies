@@ -32,6 +32,7 @@ export interface OverviewResponse {
   range: OverviewRange;
   generated_at: number;
   active_task_id: string | null;
+  last_used_task_id: string | null;
   rest_suggestion: RestSuggestionRecord | null;
   tasks: TaskRecord[];
 }

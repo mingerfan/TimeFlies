@@ -31,6 +31,7 @@ pub struct OverviewResponse {
     pub range: String,
     pub generated_at: i64,
     pub active_task_id: Option<String>,
+    pub last_used_task_id: Option<String>,
     pub rest_suggestion: Option<RestSuggestionRecord>,
     pub tasks: Vec<TaskRecord>,
 }

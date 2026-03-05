@@ -528,6 +528,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
     let exclusive_seconds = replay_exclusive_seconds(conn, window_start, now)?;
     let inclusive_seconds = derive_inclusive_seconds(&tasks, &exclusive_seconds);
     let active_task_id = find_running_task(conn)?;
+    let last_used_task_id = latest_used_task(conn)?;
     let rest_suggestion = load_latest_pending_rest_suggestion(conn)?;
 
     let records = tasks
@@ -548,6 +549,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
         range: resolved_range,
         generated_at: now,
         active_task_id,
+        last_used_task_id,
         rest_suggestion,
         tasks: records,
     })
@@ -579,6 +581,22 @@ fn latest_focus_task(conn: &Connection) -> AppResult<Option<String>> {
          FROM time_events
          WHERE event_type IN ('start', 'resume')
          ORDER BY ts DESC, id DESC
+         LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(to_error)
+}
+
+fn latest_used_task(conn: &Connection) -> AppResult<Option<String>> {
+    conn.query_row(
+        "SELECT e.task_id
+         FROM time_events e
+         INNER JOIN tasks t ON t.id = e.task_id
+         WHERE e.event_type IN ('start', 'resume', 'pause', 'stop')
+           AND t.archived_at IS NULL
+         ORDER BY e.ts DESC, e.id DESC
          LIMIT 1",
         [],
         |row| row.get(0),

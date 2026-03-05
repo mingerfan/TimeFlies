@@ -244,7 +244,11 @@
         selectedTaskId = null;
       }
       if (!selectedTaskId) {
-        selectedTaskId = allSnapshot.active_task_id ?? allSnapshot.tasks[0]?.id ?? null;
+        selectedTaskId =
+          allSnapshot.active_task_id ??
+          allSnapshot.last_used_task_id ??
+          allSnapshot.tasks[0]?.id ??
+          null;
       }
     } catch (error) {
       errorMessage = normalizeError(error);
