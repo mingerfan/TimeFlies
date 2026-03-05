@@ -31,11 +31,11 @@
       </article>
       <article class="guide-card">
         <p class="guide-cmd">/sub 子任务标题</p>
-        <p class="guide-desc">在当前任务下创建子任务；运行中会插入并开始。</p>
+        <p class="guide-desc">在当前任务下创建子任务；运行中会插入并开始，未运行会创建并开始。</p>
       </article>
       <article class="guide-card">
         <p class="guide-cmd">写周报 #work #writing</p>
-        <p class="guide-desc">纯文本创建任务并追加标签。</p>
+        <p class="guide-desc">纯文本创建并开始任务（有选中任务时作为子任务）并追加标签。</p>
       </article>
     </div>
   </section>

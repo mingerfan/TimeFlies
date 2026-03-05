@@ -245,7 +245,7 @@
 
         <section class="timer-command">
           <h2>命令模式</h2>
-          <p class="task-meta">插入子任务请使用 `/sub 子任务标题`（复用主页命令逻辑）</p>
+          <p class="task-meta">输入纯文本可直接创建并开始子任务，也可使用 `/sub 子任务标题`。</p>
           <CommandBar
             bind:value={commandInput}
             busy={loading || !!currentAction}

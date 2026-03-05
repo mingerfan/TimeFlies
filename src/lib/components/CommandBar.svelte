@@ -316,7 +316,7 @@
     replaceEnd: number;
   }): Suggestion[] {
     const query = context.query.trim().toLowerCase();
-    const items = COMMAND_NAMES.filter((name) => name.startsWith(query)).map((name) => {
+    const items: Suggestion[] = COMMAND_NAMES.filter((name) => name.startsWith(query)).map((name) => {
       const insertText = commandInsertText(name);
       return {
         id: `cmd:${name}`,
@@ -382,7 +382,7 @@
   ): Suggestion[] {
     const query = context.query.trim().toLowerCase();
     const addSpace = caret >= raw.length;
-    const items = tagStats.tags
+    const items: Suggestion[] = tagStats.tags
       .filter((tag) => tag.toLowerCase().startsWith(query))
       .map((tag) => ({
         id: `tag:${tag}`,

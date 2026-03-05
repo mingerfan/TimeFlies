@@ -82,23 +82,16 @@ async function executeCreateAction(
   context: CommandExecutionContext,
   title: string
 ): Promise<MainExecutionResult> {
-  const createdTaskId = await context.run.createTask(title, context.selectedTaskId);
-  if (!createdTaskId) {
-    return {
-      ok: false,
-      message: "创建任务失败",
-      targetTaskId: null,
-      clearInput: false,
-    };
+  const selectedTask = context.selectedTask;
+  if (selectedTask) {
+    return createAndStartSubtask(context, selectedTask, title);
   }
 
+  const createdTaskId = await context.run.createTask(title, null);
+  if (!createdTaskId) return failMain("创建任务失败");
+
   context.selectTask(createdTaskId);
-  return {
-    ok: true,
-    message: `已创建任务「${title}」`,
-    targetTaskId: createdTaskId,
-    clearInput: true,
-  };
+  return succeedMain(`已创建任务「${title}」`, createdTaskId);
 }
 
 async function executeCommandAction(
@@ -179,17 +172,31 @@ async function executeCommandAction(
     return failMain("命令错误：/sub 需要子任务标题");
   }
 
-  if (selectedTask.status === "running") {
-    const childTaskId = await context.run.insertSubtaskAndStart(selectedTask.id, subtaskTitle);
+  return createAndStartSubtask(context, selectedTask, subtaskTitle);
+}
+
+async function createAndStartSubtask(
+  context: CommandExecutionContext,
+  parentTask: TaskRecord,
+  subtaskTitle: string
+): Promise<MainExecutionResult> {
+  if (parentTask.status === "running") {
+    const childTaskId = await context.run.insertSubtaskAndStart(parentTask.id, subtaskTitle);
     if (!childTaskId) return failMain("插入子任务失败");
     context.selectTask(childTaskId);
     return succeedMain(`已插入并开始子任务「${subtaskTitle}」`, childTaskId);
   }
 
-  const childTaskId = await context.run.createTask(subtaskTitle, selectedTask.id);
+  const childTaskId = await context.run.createTask(subtaskTitle, parentTask.id);
   if (!childTaskId) return failMain("创建子任务失败");
   context.selectTask(childTaskId);
-  return succeedMain(`已创建子任务「${subtaskTitle}」`, childTaskId);
+  if (!(await context.ensureSwitchFromActive(childTaskId))) {
+    return failMain("命令错误：无法切换当前活动任务");
+  }
+
+  const started = await context.run.startTask(childTaskId);
+  if (!started) return failMain("开始子任务失败");
+  return succeedMain(`已创建并开始子任务「${subtaskTitle}」`, childTaskId);
 }
 
 function resolveParentTarget(
