@@ -13,7 +13,8 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
-  import { buildTaskChain, compactTaskPath, formatSeconds, normalizeError, statusLabel } from "$lib/ui";
+  import { notifyError } from "$lib/notifications";
+  import { buildTaskChain, compactTaskPath, formatSeconds, statusLabel } from "$lib/ui";
   import { onMount } from "svelte";
 
   type VisibleTaskRow = {
@@ -31,7 +32,6 @@
   let hasInitializedTreeExpansion = $state(false);
   let loading = $state(false);
   let currentAction = $state("");
-  let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let treeQuery = $state("");
   let quickAddTitle = $state("");
@@ -197,7 +197,6 @@
 
   async function refresh(targetRange: OverviewRange = range) {
     loading = true;
-    errorMessage = "";
     try {
       const snapshot = await getOverview(targetRange);
       overview = snapshot;
@@ -209,7 +208,7 @@
           snapshot.active_task_id ?? snapshot.last_used_task_id ?? snapshot.tasks[0].id;
       }
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError("刷新任务树失败", error, "tree-refresh-error");
     } finally {
       loading = false;
     }
@@ -217,13 +216,12 @@
 
   async function runAction<T>(label: string, action: () => Promise<T>): Promise<T | null> {
     currentAction = label;
-    errorMessage = "";
     try {
       const result = await action();
       await refresh();
       return result;
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError(`${label}失败`, error, `tree-action-error:${label}`);
       return null;
     } finally {
       currentAction = "";
@@ -554,7 +552,6 @@
   async function stopTasks(taskIds: string[]): Promise<boolean> {
     if (taskIds.length === 0) return true;
     currentAction = "停止任务";
-    errorMessage = "";
     try {
       for (const taskId of taskIds) {
         await stopTask(taskId);
@@ -562,7 +559,7 @@
       await refresh();
       return true;
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError("停止任务失败", error, "tree-stop-tasks-error");
       return false;
     } finally {
       currentAction = "";
@@ -652,10 +649,6 @@
       <button type="button" class:active={range === "day"} onclick={() => (range = "day")}>近 24 小时</button>
     </div>
   </header>
-
-  {#if errorMessage}
-    <p class="error">{errorMessage}</p>
-  {/if}
 
   <section class="panel selection-strip">
     <div>
@@ -1418,15 +1411,6 @@
   select:disabled {
     opacity: 0.56;
     cursor: not-allowed;
-  }
-
-  .error {
-    margin: 0;
-    border-radius: 0.72rem;
-    border: 1px solid #cb7474;
-    background: #ffeded;
-    color: #7f1a1a;
-    padding: 0.56rem 0.7rem;
   }
 
   .empty {

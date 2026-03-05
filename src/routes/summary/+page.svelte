@@ -2,15 +2,14 @@
   import {
     APP_DATA_CHANGED_EVENT,
     getOverview,
-    respondRestSuggestion,
     type OverviewRange,
     type OverviewResponse,
   } from "$lib/api";
+  import { notifyError } from "$lib/notifications";
   import {
     formatDate,
     formatDeviation,
     formatSeconds,
-    normalizeError,
     restHeadline,
     restTriggerLabel,
   } from "$lib/ui";
@@ -19,8 +18,6 @@
   let overview = $state<OverviewResponse | null>(null);
   let range = $state<OverviewRange>("week");
   let loading = $state(false);
-  let currentAction = $state("");
-  let errorMessage = $state("");
 
   const restSuggestion = $derived.by(() => overview?.rest_suggestion ?? null);
 
@@ -38,7 +35,7 @@
 
   onMount(() => {
     const onDataChanged = () => {
-      if (loading || !!currentAction) return;
+      if (loading) return;
       void refresh();
     };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
@@ -54,36 +51,15 @@
 
   async function refresh(targetRange: OverviewRange = range) {
     loading = true;
-    errorMessage = "";
     try {
       overview = await getOverview(targetRange);
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError("刷新统计摘要失败", error, "summary-refresh-error");
     } finally {
       loading = false;
     }
   }
 
-  async function runAction(label: string, action: () => Promise<void>) {
-    currentAction = label;
-    errorMessage = "";
-    try {
-      await action();
-      await refresh();
-    } catch (error) {
-      errorMessage = normalizeError(error);
-    } finally {
-      currentAction = "";
-    }
-  }
-
-  async function onRespondRestSuggestion(accept: boolean) {
-    const suggestion = restSuggestion;
-    if (!suggestion) return;
-    await runAction(accept ? "接受休息建议" : "忽略休息建议", () =>
-      respondRestSuggestion(suggestion.id, accept)
-    );
-  }
 </script>
 
 <main class="summary-screen">
@@ -99,10 +75,6 @@
       <button type="button" class:active={range === "day"} onclick={() => (range = "day")}>近 24 小时</button>
     </div>
   </header>
-
-  {#if errorMessage}
-    <p class="error">{errorMessage}</p>
-  {/if}
 
   <section class="summary-grid">
     <article class="panel">
@@ -125,19 +97,7 @@
             <li>{reason}</li>
           {/each}
         </ul>
-        <div class="actions">
-          <button type="button" onclick={() => onRespondRestSuggestion(true)} disabled={!!currentAction}>
-            接受
-          </button>
-          <button
-            type="button"
-            class="secondary"
-            onclick={() => onRespondRestSuggestion(false)}
-            disabled={!!currentAction}
-          >
-            忽略
-          </button>
-        </div>
+        <p class="meta">处理入口：右下角通知中心</p>
       {:else}
         <p class="empty">暂无待处理建议。建议会在任务切换或子任务结束后生成。</p>
       {/if}
@@ -322,11 +282,6 @@
     font-size: 0.9rem;
   }
 
-  .actions {
-    display: flex;
-    gap: 0.45rem;
-  }
-
   button {
     border: 1px solid #2f629f;
     border-radius: 0.62rem;
@@ -337,24 +292,9 @@
     font: inherit;
   }
 
-  button.secondary {
-    border-color: #2f629f;
-    background: #f2f7ff;
-    color: #2f629f;
-  }
-
   button:disabled {
     opacity: 0.56;
     cursor: not-allowed;
-  }
-
-  .error {
-    margin: 0;
-    border-radius: 0.72rem;
-    border: 1px solid #cb7474;
-    background: #ffeded;
-    color: #7f1a1a;
-    padding: 0.56rem 0.7rem;
   }
 
   @media (max-height: 700px) {

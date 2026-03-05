@@ -3,7 +3,6 @@
     APP_DATA_CHANGED_EVENT,
     getOverview,
     pauseTask,
-    respondRestSuggestion,
     resumeTask,
     startTask,
     stopTask,
@@ -12,15 +11,12 @@
   } from "$lib/api";
   import CommandBar from "$lib/components/CommandBar.svelte";
   import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
-  import { type CommandFeedbackTone } from "$lib/command/executor";
+  import { notifyCommandResult, notifyError } from "$lib/notifications";
   import {
     buildTaskChain,
     formatClock,
-    formatDeviation,
     formatSeconds,
     normalizeError,
-    restHeadline,
-    restTriggerLabel,
     statusLabel,
   } from "$lib/ui";
   import { onMount } from "svelte";
@@ -29,12 +25,8 @@
   let selectedTaskId = $state<string | null>(null);
   let loading = $state(false);
   let currentAction = $state("");
-  let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let commandInput = $state("");
-  let commandFeedback = $state("");
-  let commandFeedbackDetail = $state("");
-  let commandFeedbackTone = $state<CommandFeedbackTone>("success");
   let lastCommandRunErrorDetail = $state<string | null>(null);
 
   const taskMap = $derived.by(() => {
@@ -69,8 +61,6 @@
     return base + delta;
   });
 
-  const restSuggestion = $derived.by(() => overview?.rest_suggestion ?? null);
-
   onMount(() => {
     void refresh();
     const onDataChanged = () => {
@@ -101,11 +91,10 @@
 
   async function refresh() {
     loading = true;
-    errorMessage = "";
     try {
       overview = await getOverview("all");
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError("刷新计时页数据失败", error, "timer-refresh-error");
     } finally {
       loading = false;
     }
@@ -119,9 +108,6 @@
     const { surfaceError = true } = options;
     currentAction = label;
     lastCommandRunErrorDetail = null;
-    if (surfaceError) {
-      errorMessage = "";
-    }
     try {
       const result = await action();
       await refresh();
@@ -129,7 +115,7 @@
     } catch (error) {
       lastCommandRunErrorDetail = normalizeError(error);
       if (surfaceError) {
-        errorMessage = lastCommandRunErrorDetail;
+        notifyError(`${label}失败`, lastCommandRunErrorDetail, `timer-action-error:${label}`);
       }
       return null;
     } finally {
@@ -172,14 +158,6 @@
     await runAction("停止任务", () => stopTask(task.id));
   }
 
-  async function onRespondRestSuggestion(accept: boolean) {
-    const suggestion = restSuggestion;
-    if (!suggestion) return;
-    await runAction(accept ? "接受休息建议" : "忽略休息建议", () =>
-      respondRestSuggestion(suggestion.id, accept)
-    );
-  }
-
   async function onCommandExecute(input: string) {
     await handleCommandInput({
       input,
@@ -194,13 +172,9 @@
       runAction,
       ensureSwitchFromActive,
       selectTask: (taskId) => (selectedTaskId = taskId),
-      clearErrorMessage: () => {
-        errorMessage = "";
-      },
+      clearErrorMessage: () => {},
       setCommandFeedback: (message, tone, detail) => {
-        commandFeedback = message;
-        commandFeedbackTone = tone;
-        commandFeedbackDetail = detail ?? "";
+        notifyCommandResult(message, tone, detail);
       },
       clearCommandInput: () => {
         commandInput = "";
@@ -220,10 +194,6 @@
       {loading ? "刷新中..." : "手动刷新"}
     </button>
   </header>
-
-  {#if errorMessage}
-    <p class="error">{errorMessage}</p>
-  {/if}
 
   <section class="timer-main">
     <article class="panel focus-panel">
@@ -258,9 +228,6 @@
           <CommandBar
             bind:value={commandInput}
             busy={loading || !!currentAction}
-            feedback={commandFeedback}
-            feedbackDetail={commandFeedbackDetail}
-            tone={commandFeedbackTone}
             tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}
           />
@@ -271,29 +238,6 @@
     </article>
   </section>
 
-  {#if restSuggestion}
-    <section class="suggestion">
-      <p class="headline">{restHeadline(restSuggestion)}</p>
-      <p class="detail">
-        触发点 {restTriggerLabel(restSuggestion.trigger_type)} · 连续专注
-        {formatSeconds(restSuggestion.focus_seconds)} · 30 分钟切换 {restSuggestion.switch_count_30m} 次 · 偏差
-        {formatDeviation(restSuggestion.deviation_ratio)}
-      </p>
-      <div class="actions">
-        <button type="button" onclick={() => onRespondRestSuggestion(true)} disabled={!!currentAction}>
-          接受建议
-        </button>
-        <button
-          type="button"
-          class="secondary"
-          onclick={() => onRespondRestSuggestion(false)}
-          disabled={!!currentAction}
-        >
-          忽略
-        </button>
-      </div>
-    </section>
-  {/if}
 </main>
 
 <style>
@@ -413,31 +357,6 @@
     color: #173c68;
   }
 
-  .suggestion {
-    border: 1px solid #a6c1e7;
-    border-radius: 0.9rem;
-    background: linear-gradient(180deg, #f5f9ff 0%, #e9f1ff 100%);
-    padding: 0.8rem 0.9rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    flex-shrink: 0;
-  }
-
-  .suggestion .headline {
-    margin: 0;
-    font-size: 1rem;
-    font-weight: 700;
-    color: #1b436f;
-  }
-
-  .suggestion .detail {
-    margin: 0;
-    color: #486b92;
-    font-size: 0.86rem;
-    line-height: 1.34;
-  }
-
   button {
     font: inherit;
   }
@@ -465,15 +384,6 @@
   button:disabled {
     opacity: 0.56;
     cursor: not-allowed;
-  }
-
-  .error {
-    margin: 0;
-    border-radius: 0.72rem;
-    border: 1px solid #cb7474;
-    background: #ffeded;
-    color: #7f1a1a;
-    padding: 0.56rem 0.7rem;
   }
 
   .empty {

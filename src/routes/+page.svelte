@@ -11,7 +11,7 @@
   } from "$lib/api";
   import CommandBar from "$lib/components/CommandBar.svelte";
   import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
-  import { type CommandFeedbackTone } from "$lib/command/executor";
+  import { notifyCommandResult, notifyError } from "$lib/notifications";
   import {
     buildTaskChain,
     compactTaskPath,
@@ -34,16 +34,12 @@
   let selectedTaskId = $state<string | null>(null);
   let loading = $state(false);
   let currentAction = $state("");
-  let errorMessage = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let expandedMiniTaskIds = $state<Set<string>>(new Set());
   let miniAutoRootId = $state<string | null>(null);
   let miniAutoFocusId = $state<string | null>(null);
 
   let commandInput = $state("");
-  let commandFeedback = $state("");
-  let commandFeedbackDetail = $state("");
-  let commandFeedbackTone = $state<CommandFeedbackTone>("success");
   let lastCommandRunErrorDetail = $state<string | null>(null);
 
   const taskMap = $derived.by(() => {
@@ -234,7 +230,6 @@
 
   async function refresh() {
     loading = true;
-    errorMessage = "";
     try {
       const [allSnapshot, daySnapshot] = await Promise.all([
         getOverview("all"),
@@ -253,7 +248,7 @@
           null;
       }
     } catch (error) {
-      errorMessage = normalizeError(error);
+      notifyError("刷新任务概览失败", error, "overview-refresh-error");
     } finally {
       loading = false;
     }
@@ -267,9 +262,6 @@
     const { surfaceError = true } = options;
     currentAction = label;
     lastCommandRunErrorDetail = null;
-    if (surfaceError) {
-      errorMessage = "";
-    }
     try {
       const result = await action();
       await refresh();
@@ -277,7 +269,7 @@
     } catch (error) {
       lastCommandRunErrorDetail = normalizeError(error);
       if (surfaceError) {
-        errorMessage = lastCommandRunErrorDetail;
+        notifyError(`${label}失败`, lastCommandRunErrorDetail, `action-error:${label}`);
       }
       return null;
     } finally {
@@ -372,13 +364,9 @@
       runAction,
       ensureSwitchFromActive,
       selectTask: (taskId) => (selectedTaskId = taskId),
-      clearErrorMessage: () => {
-        errorMessage = "";
-      },
+      clearErrorMessage: () => {},
       setCommandFeedback: (message, tone, detail) => {
-        commandFeedback = message;
-        commandFeedbackTone = tone;
-        commandFeedbackDetail = detail ?? "";
+        notifyCommandResult(message, tone, detail);
       },
       clearCommandInput: () => {
         commandInput = "";
@@ -390,9 +378,7 @@
     if (!activeTask) return;
     if (selectedTaskId === activeTask.id) return;
     selectedTaskId = activeTask.id;
-    commandFeedbackTone = "success";
-    commandFeedback = `操控目标已切换为活动任务「${activeTask.title}」`;
-    commandFeedbackDetail = "";
+    notifyCommandResult(`操控目标已切换为活动任务「${activeTask.title}」`, "success");
   }
 
   function onHeroKeydown(event: KeyboardEvent) {
@@ -494,10 +480,6 @@
     </div>
   </header>
 
-  {#if errorMessage}
-    <p class="error">{errorMessage}</p>
-  {/if}
-
   <section class="content-grid">
     <section class="main-stack">
       <article class="panel session-panel">
@@ -561,9 +543,6 @@
           <CommandBar
             bind:value={commandInput}
             busy={loading || !!currentAction}
-            feedback={commandFeedback}
-            feedbackDetail={commandFeedbackDetail}
-            tone={commandFeedbackTone}
             tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}
           />
@@ -1190,15 +1169,6 @@
   button:disabled {
     opacity: 0.56;
     cursor: not-allowed;
-  }
-
-  .error {
-    margin: 0;
-    border-radius: 0.72rem;
-    border: 1px solid #cb7474;
-    background: #ffeded;
-    color: #7f1a1a;
-    padding: 0.56rem 0.7rem;
   }
 
   @media (min-width: 1680px) and (min-aspect-ratio: 2/1) {

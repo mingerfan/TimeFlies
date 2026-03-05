@@ -7,6 +7,12 @@
     respondRestSuggestion,
     type OverviewResponse,
   } from "$lib/api";
+  import NotificationHub from "$lib/components/NotificationHub.svelte";
+  import {
+    dismissByDedupeKey,
+    notifyError,
+    pushNotification,
+  } from "$lib/notifications";
   import {
     formatDeviation,
     formatSeconds,
@@ -20,8 +26,41 @@
   let sidebarOverview = $state<OverviewResponse | null>(null);
   let sidebarLoading = $state(false);
   let sidebarAction = $state("");
+  const REST_SUGGESTION_KEY = "rest-suggestion:pending";
 
   const restSuggestion = $derived.by(() => sidebarOverview?.rest_suggestion ?? null);
+
+  $effect(() => {
+    const suggestion = restSuggestion;
+    if (!suggestion) {
+      dismissByDedupeKey(REST_SUGGESTION_KEY);
+      return;
+    }
+
+    pushNotification({
+      kind: "rest-suggestion",
+      level: "info",
+      dedupeKey: REST_SUGGESTION_KEY,
+      autoCloseMs: null,
+      title: restHeadline(suggestion),
+      message:
+        `${restTriggerLabel(suggestion.trigger_type)} · 连续专注 ${formatSeconds(suggestion.focus_seconds)}` +
+        ` · 30 分钟切换 ${suggestion.switch_count_30m} 次 · 偏差 ${formatDeviation(suggestion.deviation_ratio)}`,
+      detail: suggestion.reasons[0],
+      actions: [
+        {
+          label: sidebarAction === "接受休息建议" ? "处理中..." : "接受",
+          run: () => onRespondRestSuggestion(true),
+          variant: "primary",
+        },
+        {
+          label: sidebarAction === "忽略休息建议" ? "处理中..." : "忽略",
+          run: () => onRespondRestSuggestion(false),
+          variant: "secondary",
+        },
+      ],
+    });
+  });
 
   afterNavigate(() => {
     void refreshSidebar();
@@ -54,8 +93,8 @@
     sidebarAction = label;
     try {
       await action();
-    } catch {
-      // Rest suggestion action failures are surfaced on next successful refresh.
+    } catch (error) {
+      notifyError(`${label}失败`, error, "rest-suggestion-action-error");
     } finally {
       sidebarAction = "";
       await refreshSidebar(true);
@@ -91,36 +130,7 @@
     {@render children()}
   </section>
 
-  {#if restSuggestion}
-    <section class="rest-popup" role="status" aria-live="polite">
-      <p class="rest-title">{restHeadline(restSuggestion)}</p>
-      <p class="rest-detail">
-        {restTriggerLabel(restSuggestion.trigger_type)} · 连续专注
-        {formatSeconds(restSuggestion.focus_seconds)} · 30 分钟切换 {restSuggestion.switch_count_30m} 次 · 偏差
-        {formatDeviation(restSuggestion.deviation_ratio)}
-      </p>
-      {#if restSuggestion.reasons[0]}
-        <p class="rest-reason">{restSuggestion.reasons[0]}</p>
-      {/if}
-      <div class="rest-actions">
-        <button
-          type="button"
-          onclick={() => onRespondRestSuggestion(true)}
-          disabled={!!sidebarAction}
-        >
-          接受
-        </button>
-        <button
-          type="button"
-          class="secondary"
-          onclick={() => onRespondRestSuggestion(false)}
-          disabled={!!sidebarAction}
-        >
-          忽略
-        </button>
-      </div>
-    </section>
-  {/if}
+  <NotificationHub />
 </main>
 
 <style>
@@ -244,69 +254,6 @@
     flex-direction: column;
   }
 
-  .rest-popup {
-    position: fixed;
-    right: 1.2rem;
-    bottom: 1.1rem;
-    width: min(420px, calc(100vw - 2rem));
-    border: 1px solid #9dbce4;
-    border-radius: 0.9rem;
-    background: linear-gradient(180deg, #f6faff 0%, #edf4ff 100%);
-    box-shadow: 0 10px 30px rgba(31, 69, 116, 0.18);
-    padding: 0.75rem 0.85rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    z-index: 50;
-  }
-
-  .rest-title {
-    margin: 0;
-    color: #153a65;
-    font-size: 0.95rem;
-    font-weight: 700;
-  }
-
-  .rest-detail {
-    margin: 0;
-    color: #486b92;
-    font-size: 0.82rem;
-    line-height: 1.35;
-  }
-
-  .rest-reason {
-    margin: 0;
-    color: #335981;
-    font-size: 0.8rem;
-  }
-
-  .rest-actions {
-    display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-  }
-
-  .rest-actions button {
-    border: 1px solid #2f629f;
-    border-radius: 0.58rem;
-    background: #2f629f;
-    color: #fff;
-    padding: 0.42rem 0.64rem;
-    cursor: pointer;
-    font: inherit;
-  }
-
-  .rest-actions button.secondary {
-    border-color: #2f629f;
-    background: #f2f7ff;
-    color: #2f629f;
-  }
-
-  .rest-actions button:disabled {
-    opacity: 0.56;
-    cursor: not-allowed;
-  }
-
   .content :global(main) {
     flex: 1;
     min-height: 0;
@@ -336,11 +283,6 @@
       text-align: center;
     }
 
-    .rest-popup {
-      right: 0.8rem;
-      bottom: 0.8rem;
-      width: calc(100vw - 1.6rem);
-    }
   }
 
   @media (max-height: 700px) {
