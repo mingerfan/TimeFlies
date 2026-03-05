@@ -131,5 +131,61 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
             .map_err(|error| format!("failed to apply sqlite migration v2: {error}"))?;
     }
 
+    if current_version < 3 {
+        connection
+            .execute_batch(
+                "
+                BEGIN;
+
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL CHECK(kind IN ('rest_suggestion')),
+                    level TEXT NOT NULL CHECK(level IN ('info', 'warning', 'error', 'success')),
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'ignored', 'dismissed')),
+                    title TEXT NOT NULL,
+                    message TEXT,
+                    detail TEXT,
+                    rest_suggestion_id INTEGER REFERENCES rest_suggestions(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL,
+                    responded_at INTEGER
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_rest_suggestion
+                    ON notifications(rest_suggestion_id)
+                    WHERE rest_suggestion_id IS NOT NULL;
+
+                CREATE INDEX IF NOT EXISTS idx_notifications_status_created_at
+                    ON notifications(status, created_at DESC, id DESC);
+
+                INSERT INTO notifications
+                    (kind, level, status, title, message, detail, rest_suggestion_id, created_at, responded_at)
+                SELECT
+                    'rest_suggestion',
+                    'info',
+                    CASE
+                        WHEN rs.status = 'pending' THEN 'pending'
+                        WHEN rs.status = 'accepted' THEN 'accepted'
+                        ELSE 'ignored'
+                    END,
+                    '建议休息 ' || rs.suggested_minutes || ' 分钟',
+                    NULL,
+                    NULL,
+                    rs.id,
+                    rs.created_at,
+                    rs.responded_at
+                FROM rest_suggestions rs
+                WHERE rs.suggested_minutes > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM notifications n WHERE n.rest_suggestion_id = rs.id
+                  );
+
+                PRAGMA user_version = 3;
+
+                COMMIT;
+                ",
+            )
+            .map_err(|error| format!("failed to apply sqlite migration v3: {error}"))?;
+    }
+
     Ok(())
 }

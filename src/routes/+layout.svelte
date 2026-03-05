@@ -28,7 +28,16 @@
   let sidebarAction = $state("");
   const REST_SUGGESTION_KEY = "rest-suggestion:pending";
 
-  const restSuggestion = $derived.by(() => sidebarOverview?.rest_suggestion ?? null);
+  const restSuggestion = $derived.by(() => {
+    const fromNotifications =
+      sidebarOverview?.notifications.find(
+        (item) =>
+          item.kind === "rest_suggestion" &&
+          item.status === "pending" &&
+          item.rest_suggestion !== null
+      )?.rest_suggestion ?? null;
+    return fromNotifications ?? sidebarOverview?.rest_suggestion ?? null;
+  });
 
   $effect(() => {
     const suggestion = restSuggestion;

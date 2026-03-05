@@ -28,12 +28,25 @@ export interface RestSuggestionRecord {
   created_at: number;
 }
 
+export interface NotificationRecord {
+  id: number;
+  kind: "rest_suggestion";
+  level: "info" | "warning" | "error" | "success";
+  status: "pending" | "accepted" | "ignored" | "dismissed";
+  title: string;
+  message: string | null;
+  detail: string | null;
+  created_at: number;
+  rest_suggestion: RestSuggestionRecord | null;
+}
+
 export interface OverviewResponse {
   range: OverviewRange;
   generated_at: number;
   active_task_id: string | null;
   last_used_task_id: string | null;
   rest_suggestion: RestSuggestionRecord | null;
+  notifications: NotificationRecord[];
   tasks: TaskRecord[];
 }
 

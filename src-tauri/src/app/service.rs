@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::domain::{OverviewResponse, RestSuggestionRecord, TaskRecord};
+use crate::domain::{NotificationRecord, OverviewResponse, RestSuggestionRecord, TaskRecord};
 use crate::infra::AppResult;
 
 const STATUS_IDLE: &str = "idle";
@@ -27,6 +27,8 @@ const REST_TRIGGER_TASK_SWITCH: &str = "task_switch";
 const REST_STATUS_PENDING: &str = "pending";
 const REST_STATUS_ACCEPTED: &str = "accepted";
 const REST_STATUS_IGNORED: &str = "ignored";
+const NOTIFICATION_KIND_REST_SUGGESTION: &str = "rest_suggestion";
+const NOTIFICATION_LEVEL_INFO: &str = "info";
 const SWITCH_WINDOW_SECONDS: i64 = 30 * 60;
 
 #[derive(Debug)]
@@ -503,6 +505,14 @@ pub fn respond_rest_suggestion(
             .map_err(to_error)?;
 
         if updated > 0 {
+            tx.execute(
+                "UPDATE notifications
+                 SET status = ?1, responded_at = ?2
+                 WHERE rest_suggestion_id = ?3 AND status = ?4",
+                params![status, ts, suggestion_id, REST_STATUS_PENDING],
+            )
+            .map_err(to_error)?;
+
             if accept {
                 let running_task_id: Option<String> = tx
                     .query_row(
@@ -563,6 +573,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
     let active_task_id = find_running_task(conn)?;
     let last_used_task_id = latest_used_task(conn)?;
     let rest_suggestion = load_latest_pending_rest_suggestion(conn)?;
+    let notifications = load_pending_notifications(conn)?;
 
     let records = tasks
         .into_iter()
@@ -584,6 +595,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
         active_task_id,
         last_used_task_id,
         rest_suggestion,
+        notifications,
         tasks: records,
     })
 }
@@ -865,6 +877,89 @@ fn load_latest_pending_rest_suggestion(
         }
         None => Ok(None),
     }
+}
+
+fn load_pending_notifications(conn: &Connection) -> AppResult<Vec<NotificationRecord>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.kind, n.level, n.status, n.title, n.message, n.detail, n.created_at,
+                    rs.id, rs.trigger_type, rs.task_id, rs.focus_seconds, rs.switch_count_30m,
+                    rs.deviation_ratio, rs.suggested_minutes, rs.reasons, rs.status, rs.created_at
+             FROM notifications n
+             LEFT JOIN rest_suggestions rs ON rs.id = n.rest_suggestion_id
+             WHERE n.status = ?1
+             ORDER BY n.created_at DESC, n.id DESC
+             LIMIT 20",
+        )
+        .map_err(to_error)?;
+
+    let rows = stmt
+        .query_map(params![REST_STATUS_PENDING], |row| {
+            let rest_id: Option<i64> = row.get(8)?;
+            let rest_task_id: Option<String> = row.get(10)?;
+            let rest_focus_seconds: Option<i64> = row.get(11)?;
+            let rest_switch_count_30m: Option<i64> = row.get(12)?;
+            let rest_deviation_ratio: Option<f64> = row.get(13)?;
+            let rest_suggested_minutes: Option<i64> = row.get(14)?;
+            let rest_reasons_raw: Option<String> = row.get(15)?;
+            let rest_status: Option<String> = row.get(16)?;
+            let rest_created_at: Option<i64> = row.get(17)?;
+
+            let rest_suggestion = match (
+                rest_id,
+                row.get::<_, Option<String>>(9)?,
+                rest_focus_seconds,
+                rest_switch_count_30m,
+                rest_deviation_ratio,
+                rest_suggested_minutes,
+                rest_reasons_raw,
+                rest_status,
+                rest_created_at,
+            ) {
+                (
+                    Some(id),
+                    Some(trigger_type),
+                    Some(focus_seconds),
+                    Some(switch_count_30m),
+                    Some(deviation_ratio),
+                    Some(suggested_minutes),
+                    Some(reasons_raw),
+                    Some(status),
+                    Some(created_at),
+                ) => {
+                    let reasons = serde_json::from_str::<Vec<String>>(&reasons_raw)
+                        .unwrap_or_else(|_| vec!["unable to parse rule reasons".to_string()]);
+                    Some(RestSuggestionRecord {
+                        id,
+                        trigger_type,
+                        task_id: rest_task_id,
+                        focus_seconds,
+                        switch_count_30m,
+                        deviation_ratio,
+                        suggested_minutes,
+                        reasons,
+                        status,
+                        created_at,
+                    })
+                }
+                _ => None,
+            };
+
+            Ok(NotificationRecord {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                level: row.get(2)?,
+                status: row.get(3)?,
+                title: row.get(4)?,
+                message: row.get(5)?,
+                detail: row.get(6)?,
+                created_at: row.get(7)?,
+                rest_suggestion,
+            })
+        })
+        .map_err(to_error)?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(to_error)
 }
 
 fn replay_exclusive_seconds(
@@ -1228,12 +1323,25 @@ fn insert_rest_suggestion(
     ts: i64,
 ) -> AppResult<()> {
     let reasons_json = serde_json::to_string(reasons).map_err(to_error)?;
+    let title = format!("建议休息 {suggested_minutes} 分钟");
 
     tx.execute(
         "UPDATE rest_suggestions
          SET status = ?1, responded_at = ?2
          WHERE status = ?3",
         params![REST_STATUS_IGNORED, ts, REST_STATUS_PENDING],
+    )
+    .map_err(to_error)?;
+    tx.execute(
+        "UPDATE notifications
+         SET status = ?1, responded_at = ?2
+         WHERE kind = ?3 AND status = ?4",
+        params![
+            REST_STATUS_IGNORED,
+            ts,
+            NOTIFICATION_KIND_REST_SUGGESTION,
+            REST_STATUS_PENDING
+        ],
     )
     .map_err(to_error)?;
 
@@ -1255,6 +1363,21 @@ fn insert_rest_suggestion(
             suggested_minutes,
             reasons_json,
             REST_STATUS_PENDING,
+            ts
+        ],
+    )
+    .map_err(to_error)?;
+    let rest_suggestion_id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO notifications
+            (kind, level, status, title, message, detail, rest_suggestion_id, created_at, responded_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, NULL)",
+        params![
+            NOTIFICATION_KIND_REST_SUGGESTION,
+            NOTIFICATION_LEVEL_INFO,
+            REST_STATUS_PENDING,
+            title,
+            rest_suggestion_id,
             ts
         ],
     )

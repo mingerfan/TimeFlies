@@ -27,11 +27,25 @@ pub struct RestSuggestionRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct NotificationRecord {
+    pub id: i64,
+    pub kind: String,
+    pub level: String,
+    pub status: String,
+    pub title: String,
+    pub message: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: i64,
+    pub rest_suggestion: Option<RestSuggestionRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OverviewResponse {
     pub range: String,
     pub generated_at: i64,
     pub active_task_id: Option<String>,
     pub last_used_task_id: Option<String>,
     pub rest_suggestion: Option<RestSuggestionRecord>,
+    pub notifications: Vec<NotificationRecord>,
     pub tasks: Vec<TaskRecord>,
 }
