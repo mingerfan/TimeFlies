@@ -7,6 +7,7 @@ export type CommandExecutionResult = {
   ok: boolean;
   tone: CommandFeedbackTone;
   message: string;
+  detail?: string;
   clearInput: boolean;
 };
 
@@ -29,6 +30,7 @@ export type CommandExecutionContext = {
   activeTask: TaskRecord | null;
   tasks: TaskRecord[];
   run: CommandRunApi;
+  getLastRunErrorDetail: () => string | null;
   ensureSwitchFromActive: (targetTaskId: string) => Promise<boolean>;
   selectTask: (taskId: string | null) => void;
 };
@@ -36,6 +38,7 @@ export type CommandExecutionContext = {
 type MainExecutionResult = {
   ok: boolean;
   message: string;
+  detail?: string;
   targetTaskId: string | null;
   clearInput: boolean;
 };
@@ -71,7 +74,7 @@ export async function executeParsedCommand(
       : await executeCommandAction(context, parsed.name, parsed.argument);
 
   if (!mainResult.ok) {
-    return failure(mainResult.message, mainResult.clearInput);
+    return failure(mainResult.message, mainResult.clearInput, mainResult.detail);
   }
 
   const tagResult = await applyTags(mainResult.targetTaskId, parsed.tags, context.run.addTagToTask);
@@ -88,7 +91,7 @@ async function executeCreateAction(
   }
 
   const createdTaskId = await context.run.createTask(title, null);
-  if (!createdTaskId) return failMain("创建任务失败");
+  if (!createdTaskId) return failMain("创建任务失败", context.getLastRunErrorDetail());
 
   context.selectTask(createdTaskId);
   return succeedMain(`已创建任务「${title}」`, createdTaskId);
@@ -113,7 +116,9 @@ async function executeCommandAction(
     const title = argument.trim();
     if (!title) return failMain("命令错误：/rename 需要标题");
     const ok = await context.run.renameTask(selectedTask.id, title);
-    return ok ? succeedMain(`已重命名为「${title}」`, selectedTask.id) : failMain("重命名失败");
+    return ok
+      ? succeedMain(`已重命名为「${title}」`, selectedTask.id)
+      : failMain("重命名失败", context.getLastRunErrorDetail());
   }
 
   if (commandName === "parent") {
@@ -122,7 +127,7 @@ async function executeCommandAction(
     if (target.parentId === selectedTask.id) return failMain("命令错误：父任务不能是自己");
 
     const ok = await context.run.reparentTask(selectedTask.id, target.parentId);
-    if (!ok) return failMain("调整父任务失败");
+    if (!ok) return failMain("调整父任务失败", context.getLastRunErrorDetail());
     return succeedMain(target.parentId ? `已调整父任务为「${target.label}」` : "已设为根任务", selectedTask.id);
   }
 
@@ -131,13 +136,15 @@ async function executeCommandAction(
       return succeedMain(`任务「${selectedTask.title}」已在进行中`, selectedTask.id);
     }
     if (!(await context.ensureSwitchFromActive(selectedTask.id))) {
-      return failMain("命令错误：无法切换当前活动任务");
+      return failMain("命令错误：无法切换当前活动任务", context.getLastRunErrorDetail());
     }
     const ok =
       selectedTask.status === "paused"
         ? await context.run.resumeTask(selectedTask.id)
         : await context.run.startTask(selectedTask.id);
-    return ok ? succeedMain(`已开始任务「${selectedTask.title}」`, selectedTask.id) : failMain("开始任务失败");
+    return ok
+      ? succeedMain(`已开始任务「${selectedTask.title}」`, selectedTask.id)
+      : failMain("开始任务失败", context.getLastRunErrorDetail());
   }
 
   if (commandName === "pause") {
@@ -145,7 +152,9 @@ async function executeCommandAction(
       return failMain("命令错误：当前任务不在进行中");
     }
     const ok = await context.run.pauseTask(selectedTask.id);
-    return ok ? succeedMain(`已暂停任务「${selectedTask.title}」`, selectedTask.id) : failMain("暂停任务失败");
+    return ok
+      ? succeedMain(`已暂停任务「${selectedTask.title}」`, selectedTask.id)
+      : failMain("暂停任务失败", context.getLastRunErrorDetail());
   }
 
   if (commandName === "resume") {
@@ -153,10 +162,12 @@ async function executeCommandAction(
       return failMain("命令错误：当前任务不在暂停状态");
     }
     if (!(await context.ensureSwitchFromActive(selectedTask.id))) {
-      return failMain("命令错误：无法切换当前活动任务");
+      return failMain("命令错误：无法切换当前活动任务", context.getLastRunErrorDetail());
     }
     const ok = await context.run.resumeTask(selectedTask.id);
-    return ok ? succeedMain(`已恢复任务「${selectedTask.title}」`, selectedTask.id) : failMain("恢复任务失败");
+    return ok
+      ? succeedMain(`已恢复任务「${selectedTask.title}」`, selectedTask.id)
+      : failMain("恢复任务失败", context.getLastRunErrorDetail());
   }
 
   if (commandName === "stop") {
@@ -164,7 +175,9 @@ async function executeCommandAction(
       return failMain("命令错误：当前任务未开始，无法停止");
     }
     const ok = await context.run.stopTask(selectedTask.id);
-    return ok ? succeedMain(`已停止任务「${selectedTask.title}」`, selectedTask.id) : failMain("停止任务失败");
+    return ok
+      ? succeedMain(`已停止任务「${selectedTask.title}」`, selectedTask.id)
+      : failMain("停止任务失败", context.getLastRunErrorDetail());
   }
 
   const subtaskTitle = argument.trim();
@@ -182,20 +195,20 @@ async function createAndStartSubtask(
 ): Promise<MainExecutionResult> {
   if (parentTask.status === "running") {
     const childTaskId = await context.run.insertSubtaskAndStart(parentTask.id, subtaskTitle);
-    if (!childTaskId) return failMain("插入子任务失败");
+    if (!childTaskId) return failMain("插入子任务失败", context.getLastRunErrorDetail());
     context.selectTask(childTaskId);
     return succeedMain(`已插入并开始子任务「${subtaskTitle}」`, childTaskId);
   }
 
   const childTaskId = await context.run.createTask(subtaskTitle, parentTask.id);
-  if (!childTaskId) return failMain("创建子任务失败");
+  if (!childTaskId) return failMain("创建子任务失败", context.getLastRunErrorDetail());
   context.selectTask(childTaskId);
   if (!(await context.ensureSwitchFromActive(childTaskId))) {
-    return failMain("命令错误：无法切换当前活动任务");
+    return failMain("命令错误：无法切换当前活动任务", context.getLastRunErrorDetail());
   }
 
   const started = await context.run.startTask(childTaskId);
-  if (!started) return failMain("开始子任务失败");
+  if (!started) return failMain("开始子任务失败", context.getLastRunErrorDetail());
   return succeedMain(`已创建并开始子任务「${subtaskTitle}」`, childTaskId);
 }
 
@@ -308,10 +321,11 @@ function decorateTagFeedback(
   };
 }
 
-function failMain(message: string): MainExecutionResult {
+function failMain(message: string, detail?: string | null): MainExecutionResult {
   return {
     ok: false,
     message,
+    detail: detail ?? undefined,
     targetTaskId: null,
     clearInput: false,
   };
@@ -326,11 +340,12 @@ function succeedMain(message: string, targetTaskId: string): MainExecutionResult
   };
 }
 
-function failure(message: string, clearInput: boolean): CommandExecutionResult {
+function failure(message: string, clearInput: boolean, detail?: string): CommandExecutionResult {
   return {
     ok: false,
     tone: "error",
     message,
+    detail,
     clearInput,
   };
 }

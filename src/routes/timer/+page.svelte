@@ -33,7 +33,9 @@
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let commandInput = $state("");
   let commandFeedback = $state("");
+  let commandFeedbackDetail = $state("");
   let commandFeedbackTone = $state<CommandFeedbackTone>("success");
+  let lastCommandRunErrorDetail = $state<string | null>(null);
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -116,6 +118,7 @@
   ): Promise<T | null> {
     const { surfaceError = true } = options;
     currentAction = label;
+    lastCommandRunErrorDetail = null;
     if (surfaceError) {
       errorMessage = "";
     }
@@ -124,8 +127,9 @@
       await refresh();
       return result;
     } catch (error) {
+      lastCommandRunErrorDetail = normalizeError(error);
       if (surfaceError) {
-        errorMessage = normalizeError(error);
+        errorMessage = lastCommandRunErrorDetail;
       }
       return null;
     } finally {
@@ -183,15 +187,20 @@
       selectedTaskId,
       activeTask,
       tasks: overview?.tasks ?? [],
+      getLastRunErrorDetail: () => lastCommandRunErrorDetail,
+      clearLastRunErrorDetail: () => {
+        lastCommandRunErrorDetail = null;
+      },
       runAction,
       ensureSwitchFromActive,
       selectTask: (taskId) => (selectedTaskId = taskId),
       clearErrorMessage: () => {
         errorMessage = "";
       },
-      setCommandFeedback: (message, tone) => {
+      setCommandFeedback: (message, tone, detail) => {
         commandFeedback = message;
         commandFeedbackTone = tone;
+        commandFeedbackDetail = detail ?? "";
       },
       clearCommandInput: () => {
         commandInput = "";
@@ -250,6 +259,7 @@
             bind:value={commandInput}
             busy={loading || !!currentAction}
             feedback={commandFeedback}
+            feedbackDetail={commandFeedbackDetail}
             tone={commandFeedbackTone}
             tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}

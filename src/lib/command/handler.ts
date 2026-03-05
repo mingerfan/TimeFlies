@@ -34,6 +34,8 @@ export type HandleCommandInputArgs = {
   selectedTaskId: string | null;
   activeTask: TaskRecord | null;
   tasks: TaskRecord[];
+  getLastRunErrorDetail: () => string | null;
+  clearLastRunErrorDetail: () => void;
   runAction: CommandRunAction;
   ensureSwitchFromActive: (
     targetTaskId: string,
@@ -41,7 +43,7 @@ export type HandleCommandInputArgs = {
   ) => Promise<boolean>;
   selectTask: (taskId: string | null) => void;
   clearErrorMessage: () => void;
-  setCommandFeedback: (message: string, tone: CommandFeedbackTone) => void;
+  setCommandFeedback: (message: string, tone: CommandFeedbackTone, detail?: string) => void;
   clearCommandInput: () => void;
 };
 
@@ -49,6 +51,7 @@ export async function handleCommandInput(
   args: HandleCommandInputArgs
 ): Promise<CommandExecutionResult> {
   args.clearErrorMessage();
+  args.clearLastRunErrorDetail();
   const parsed = parseCommandInput(args.input);
   const result = await executeParsedCommand({
     parsed,
@@ -57,12 +60,13 @@ export async function handleCommandInput(
     activeTask: args.activeTask,
     tasks: args.tasks,
     run: createCommandRunApi(args.runAction),
+    getLastRunErrorDetail: args.getLastRunErrorDetail,
     ensureSwitchFromActive: (targetTaskId) =>
       args.ensureSwitchFromActive(targetTaskId, { surfaceError: false }),
     selectTask: args.selectTask,
   });
 
-  args.setCommandFeedback(result.message, result.tone);
+  args.setCommandFeedback(result.message, result.tone, result.detail);
   if (result.clearInput) {
     args.clearCommandInput();
   }

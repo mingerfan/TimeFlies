@@ -21,6 +21,7 @@
     value = $bindable(""),
     busy = false,
     feedback = "",
+    feedbackDetail = "",
     tone = "success",
     tasks = [],
     historyKey = "timeflies:command-history",
@@ -29,6 +30,7 @@
     value?: string;
     busy?: boolean;
     feedback?: string;
+    feedbackDetail?: string;
     tone?: CommandFeedbackTone;
     tasks?: TaskRecord[];
     historyKey?: string;
@@ -446,7 +448,10 @@
   <p class="command-hint">Tab 补全，Shift+Tab 反向切换，↑/↓ 历史。Enter 执行，Esc 关闭/清空。支持 `#tag` 自动补全。</p>
   {#if feedback}
     <p class="command-feedback" class:success={tone === "success"} class:error={tone === "error"} class:warning={tone === "warning"}>
-      {feedback}
+      <span class="feedback-main">{feedback}</span>
+      {#if feedbackDetail}
+        <small class="feedback-detail">{feedbackDetail}</small>
+      {/if}
     </p>
   {/if}
 </section>
@@ -554,6 +559,20 @@
     padding: 0.45rem 0.6rem;
     font-size: 0.85rem;
     line-height: 1.35;
+    display: flex;
+    flex-direction: column;
+    gap: 0.14rem;
+  }
+
+  .feedback-main {
+    font-size: 0.85rem;
+  }
+
+  .feedback-detail {
+    font-size: 0.74rem;
+    opacity: 0.9;
+    line-height: 1.3;
+    white-space: pre-wrap;
   }
 
   .command-feedback.success {
