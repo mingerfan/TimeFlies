@@ -13,7 +13,7 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
-  import { buildTaskChain, formatSeconds, normalizeError, statusLabel } from "$lib/ui";
+  import { buildTaskChain, compactTaskPath, formatSeconds, normalizeError, statusLabel } from "$lib/ui";
   import { onMount } from "svelte";
 
   type VisibleTaskRow = {
@@ -79,11 +79,12 @@
     return new Set(chain.map((task) => task.id));
   });
 
-  const selectedTaskPath = $derived.by(() =>
-    buildTaskChain(selectedTask?.id ?? null, taskMap)
-      .map((task) => task.title)
-      .join(" / ")
+  const selectedTaskPathTitles = $derived.by(() =>
+    buildTaskChain(selectedTask?.id ?? null, taskMap).map((task) => task.title)
   );
+
+  const selectedTaskPath = $derived.by(() => selectedTaskPathTitles.join(" / "));
+  const selectedTaskPathCompact = $derived.by(() => compactTaskPath(selectedTaskPathTitles));
 
   const selectedExclusiveSeconds = $derived.by(() => {
     const task = selectedTask;
@@ -659,9 +660,11 @@
   <section class="panel selection-strip">
     <div>
       {#if selectedTask}
-        <p class="selected-title">{selectedTask.title}</p>
+        <p class="selected-title" title={selectedTask.title}>{selectedTask.title}</p>
         <p class="selected-meta">
-          {statusLabel(selectedTask.status)} · {selectedTaskPath} · Ex {formatSeconds(selectedExclusiveSeconds)}
+          <span>{statusLabel(selectedTask.status)}</span>
+          <span class="selected-path" title={selectedTaskPath || "-"}>路径 {selectedTaskPathCompact || "-"}</span>
+          <span>Ex {formatSeconds(selectedExclusiveSeconds)}</span>
         </p>
       {:else}
         <p class="selected-title">未选中任务</p>
@@ -941,12 +944,21 @@
     flex-shrink: 0;
   }
 
+  .selection-strip > div:first-child {
+    min-width: 0;
+    flex: 1;
+  }
+
   .selected-title {
     margin: 0;
     font-size: 1rem;
     font-weight: 700;
     color: #112d4e;
     line-height: 1.3;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .selected-meta {
@@ -954,6 +966,19 @@
     color: #4f6f95;
     font-size: 0.84rem;
     line-height: 1.35;
+    display: flex;
+    align-items: baseline;
+    gap: 0.38rem;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .selected-path {
+    max-width: min(100%, 64ch);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
 
   .selection-actions {

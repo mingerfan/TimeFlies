@@ -89,3 +89,28 @@ export function buildTaskChain(
   }
   return chain.reverse();
 }
+
+export function compactTaskPath(
+  titles: string[],
+  options: { maxSegments?: number; tailSegments?: number; maxSegmentChars?: number } = {}
+): string {
+  if (titles.length === 0) return "";
+
+  const maxSegments = Math.max(3, options.maxSegments ?? 4);
+  const tailSegments = Math.max(1, options.tailSegments ?? 2);
+  const maxSegmentChars = Math.max(6, options.maxSegmentChars ?? 18);
+
+  const normalized = titles.map((title) => truncateLabel(title, maxSegmentChars));
+  if (normalized.length <= maxSegments) {
+    return normalized.join(" / ");
+  }
+
+  const safeTail = Math.min(tailSegments, normalized.length - 2);
+  return [normalized[0], "...", ...normalized.slice(-safeTail)].join(" / ");
+}
+
+function truncateLabel(raw: string, maxChars: number): string {
+  const text = raw.trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars - 3)}...`;
+}

@@ -14,6 +14,7 @@
   import { type CommandFeedbackTone } from "$lib/command/executor";
   import {
     buildTaskChain,
+    compactTaskPath,
     formatClock,
     formatDate,
     formatSeconds,
@@ -75,11 +76,12 @@
     overview?.active_task_id ? (taskMap.get(overview.active_task_id) ?? null) : null
   );
 
-  const activeTaskPath = $derived.by(() =>
-    buildTaskChain(activeTask?.id ?? null, taskMap)
-      .map((task) => task.title)
-      .join(" / ")
+  const activeTaskPathTitles = $derived.by(() =>
+    buildTaskChain(activeTask?.id ?? null, taskMap).map((task) => task.title)
   );
+
+  const activeTaskPath = $derived.by(() => activeTaskPathTitles.join(" / "));
+  const activeTaskPathCompact = $derived.by(() => compactTaskPath(activeTaskPathTitles));
 
   const heroControlTask = $derived.by(() => activeTask ?? selectedTask);
 
@@ -468,11 +470,14 @@
     onclick={onFocusActiveTask}
     onkeydown={onHeroKeydown}
   >
-    <div>
+    <div class="hero-main">
       <p class="eyebrow">主工作台</p>
       {#if activeTask}
-        <h1>{activeTask.title}</h1>
-        <p class="hero-meta">路径 {activeTaskPath || "-"} · {statusLabel(activeTask.status)}</p>
+        <h1 class="hero-title" title={activeTask.title}>{activeTask.title}</h1>
+        <p class="hero-meta">
+          <span class="hero-path" title={activeTaskPath || "-"}>路径 {activeTaskPathCompact || "-"}</span>
+          <span class="hero-status">· {statusLabel(activeTask.status)}</span>
+        </p>
         <p class="hero-stats">
           Ex {formatSeconds(activeElapsedSeconds)} · In {formatSeconds(activeInclusiveSeconds)}
         </p>
@@ -533,7 +538,7 @@
       <article class="panel detail-main">
         {#if selectedTask}
           <section class="detail-top">
-            <p class="detail-title">{selectedTask.title}</p>
+            <p class="detail-title" title={selectedTask.title}>{selectedTask.title}</p>
             <p class="meta">
               创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(selectedTask.exclusive_seconds)} · In
               {formatSeconds(selectedTask.inclusive_seconds)}
@@ -675,6 +680,11 @@
     flex-shrink: 0;
   }
 
+  .hero-main {
+    min-width: 0;
+    flex: 1;
+  }
+
   .hero.clickable {
     cursor: pointer;
   }
@@ -698,10 +708,34 @@
     color: #102b4a;
   }
 
+  .hero-title {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .hero-meta {
     margin: 0;
     color: #415d82;
     font-size: 0.9rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+
+  .hero-path {
+    min-width: 0;
+    max-width: min(100%, 62ch);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hero-status {
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .hero-stats {
@@ -784,6 +818,10 @@
     font-size: 1.14rem;
     font-weight: 700;
     color: #0f2f54;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   h2 {
@@ -962,14 +1000,23 @@
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+    scrollbar-width: thin;
+    scrollbar-color: #b5c1d2 #edf2f9;
   }
 
   .mini-tree-frame::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    display: none;
+    width: 8px;
+    height: 8px;
+  }
+
+  .mini-tree-frame::-webkit-scrollbar-thumb {
+    background: #b5c1d2;
+    border-radius: 99px;
+  }
+
+  .mini-tree-frame::-webkit-scrollbar-track {
+    background: #edf2f9;
+    border-radius: 99px;
   }
 
   .mini-list {
