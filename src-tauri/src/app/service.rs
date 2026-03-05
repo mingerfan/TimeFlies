@@ -780,7 +780,7 @@ fn load_latest_pending_rest_suggestion(
             "SELECT id, trigger_type, task_id, focus_seconds, switch_count_30m, deviation_ratio,
                     suggested_minutes, reasons, status, created_at
              FROM rest_suggestions
-             WHERE status = ?1
+             WHERE status = ?1 AND suggested_minutes > 0
              ORDER BY created_at DESC, id DESC
              LIMIT 1",
             params![REST_STATUS_PENDING],
@@ -1197,6 +1197,10 @@ fn insert_rest_suggestion(
         params![REST_STATUS_IGNORED, ts, REST_STATUS_PENDING],
     )
     .map_err(to_error)?;
+
+    if suggested_minutes <= 0 {
+        return Ok(());
+    }
 
     tx.execute(
         "INSERT INTO rest_suggestions
