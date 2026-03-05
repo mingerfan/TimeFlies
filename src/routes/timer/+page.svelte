@@ -115,7 +115,7 @@
     } catch (error) {
       lastCommandRunErrorDetail = normalizeError(error);
       if (surfaceError) {
-        notifyError(`${label}失败`, lastCommandRunErrorDetail, `timer-action-error:${label}`);
+        notifyError(`${label}失败`, error, `timer-action-error:${label}`);
       }
       return null;
     } finally {

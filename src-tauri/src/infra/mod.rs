@@ -1,3 +1,3 @@
 mod sqlite;
 
-pub use sqlite::{AppResult, AppState};
+pub use sqlite::{AppError, AppResult, AppState};

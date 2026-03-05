@@ -1,5 +1,11 @@
 import type { RestSuggestionRecord, TaskRecord, TaskStatus } from "$lib/api";
 
+export type AppErrorPayload = {
+  code?: string;
+  message: string;
+  detail?: string;
+};
+
 export function statusLabel(status: TaskStatus): string {
   switch (status) {
     case "idle":
@@ -63,12 +69,46 @@ export function restHeadline(suggestion: RestSuggestionRecord): string {
   return `建议休息 ${suggestion.suggested_minutes} 分钟`;
 }
 
-export function normalizeError(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object" && "message" in error) {
-    return String((error as { message: string }).message);
+export function extractErrorPayload(error: unknown): AppErrorPayload {
+  if (typeof error === "string") {
+    const maybeJson = parseJsonObject(error);
+    if (maybeJson) {
+      return extractErrorPayload(maybeJson);
+    }
+    return { message: error };
   }
-  return "发生未知错误";
+  if (error && typeof error === "object") {
+    const maybe = error as Record<string, unknown>;
+    if (typeof maybe.message === "string") {
+      return {
+        code: typeof maybe.code === "string" ? maybe.code : undefined,
+        message: maybe.message,
+        detail: typeof maybe.detail === "string" ? maybe.detail : undefined,
+      };
+    }
+    if (typeof maybe.error === "string") {
+      return { message: maybe.error };
+    }
+  }
+  return { message: "发生未知错误" };
+}
+
+export function normalizeError(error: unknown): string {
+  return extractErrorPayload(error).message;
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const text = raw.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export function buildTaskChain(

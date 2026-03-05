@@ -7,7 +7,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::domain::{NotificationRecord, OverviewResponse, RestSuggestionRecord, TaskRecord};
-use crate::infra::AppResult;
+use crate::infra::{AppError, AppResult};
 
 const STATUS_IDLE: &str = "idle";
 const STATUS_RUNNING: &str = "running";
@@ -89,7 +89,7 @@ pub fn delete_tasks(
     hard_delete: bool,
 ) -> AppResult<()> {
     if task_ids.is_empty() {
-        return Err("task_ids cannot be empty".to_string());
+        return Err(validation_error("task_ids cannot be empty"));
     }
 
     let expanded_ids = expand_unique_subtree_ids(conn, &task_ids)?;
@@ -105,9 +105,9 @@ pub fn delete_tasks(
         } else {
             "archive"
         };
-        return Err(format!(
+        return Err(conflict_error(format!(
             "cannot {action} task \"{active_title}\" because it is currently {active_status}"
-        ));
+        )));
     }
 
     let tx = conn.transaction().map_err(to_error)?;
@@ -130,7 +130,7 @@ pub fn reparent_task(
     let old_parent_id = task.parent_id.clone();
 
     if new_parent_id.as_deref() == Some(task_id.as_str()) {
-        return Err("task cannot be its own parent".to_string());
+        return Err(validation_error("task cannot be its own parent"));
     }
 
     if old_parent_id == new_parent_id {
@@ -141,9 +141,9 @@ pub fn reparent_task(
     if let Some((_active_id, active_title, active_status)) =
         find_active_in_subtree(conn, &subtree_ids)?
     {
-        return Err(format!(
+        return Err(conflict_error(format!(
             "cannot reparent while task \"{active_title}\" is {active_status}; stop or pause transitions first"
-        ));
+        )));
     }
 
     let subtree_set: HashSet<String> = subtree_ids.into_iter().collect();
@@ -151,7 +151,9 @@ pub fn reparent_task(
     if let Some(parent_id) = &new_parent_id {
         ensure_task_exists(conn, parent_id)?;
         if subtree_set.contains(parent_id) {
-            return Err("cannot reparent task under itself or its descendants".to_string());
+            return Err(validation_error(
+                "cannot reparent task under itself or its descendants",
+            ));
         }
         ensure_ancestor_chain_valid(conn, parent_id, &task_id)?;
     }
@@ -187,14 +189,14 @@ pub fn start_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     }
 
     if task.status == STATUS_PAUSED {
-        return Err("task is paused, use resume_task instead".to_string());
+        return Err(conflict_error("task is paused, use resume_task instead"));
     }
 
     if let Some(active_task_id) = find_running_task(conn)? {
         if active_task_id != task_id {
-            return Err(format!(
+            return Err(conflict_error(format!(
                 "cannot start task because task {active_task_id} is already running"
-            ));
+            )));
         }
     }
 
@@ -221,7 +223,7 @@ pub fn pause_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     }
 
     if task.status != STATUS_RUNNING {
-        return Err("only a running task can be paused".to_string());
+        return Err(conflict_error("only a running task can be paused"));
     }
 
     let ts = now_ts();
@@ -246,14 +248,14 @@ pub fn resume_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     }
 
     if task.status != STATUS_PAUSED {
-        return Err("only a paused task can be resumed".to_string());
+        return Err(conflict_error("only a paused task can be resumed"));
     }
 
     if let Some(active_task_id) = find_running_task(conn)? {
         if active_task_id != task_id {
-            return Err(format!(
+            return Err(conflict_error(format!(
                 "cannot resume task because task {active_task_id} is already running"
-            ));
+            )));
         }
     }
 
@@ -280,7 +282,7 @@ pub fn stop_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     }
 
     if task.status == STATUS_IDLE {
-        return Err("cannot stop an idle task".to_string());
+        return Err(conflict_error("cannot stop an idle task"));
     }
 
     let ts = now_ts();
@@ -315,17 +317,19 @@ pub fn insert_subtask_and_start(
     let parent = get_task_state(conn, &parent_task_id)?;
 
     if parent.status != STATUS_RUNNING {
-        return Err("insert_subtask_and_start requires the parent task to be running".to_string());
+        return Err(conflict_error(
+            "insert_subtask_and_start requires the parent task to be running",
+        ));
     }
 
     if let Some(active_task_id) = find_running_task(conn)? {
         if active_task_id != parent_task_id {
-            return Err(format!(
+            return Err(conflict_error(format!(
                 "cannot insert subtask while task {active_task_id} is running"
-            ));
+            )));
         }
     } else {
-        return Err("no running task found for subtask insertion".to_string());
+        return Err(conflict_error("no running task found for subtask insertion"));
     }
 
     let child_task_id = Uuid::new_v4().to_string();
@@ -483,7 +487,7 @@ pub fn respond_rest_suggestion(
     accept: bool,
 ) -> AppResult<()> {
     if suggestion_id <= 0 {
-        return Err("suggestion_id must be positive".to_string());
+        return Err(validation_error("suggestion_id must be positive"));
     }
 
     let status = if accept {
@@ -558,7 +562,9 @@ pub fn respond_rest_suggestion(
 
     match existing {
         Some(_) => Ok(()),
-        None => Err(format!("rest suggestion {suggestion_id} not found")),
+        None => Err(not_found_error(format!(
+            "rest suggestion {suggestion_id} not found"
+        ))),
     }
 }
 
@@ -617,7 +623,7 @@ fn get_task_state(conn: &Connection, task_id: &str) -> AppResult<TaskState> {
     )
     .optional()
     .map_err(to_error)?
-    .ok_or_else(|| format!("task {task_id} not found or archived"))
+    .ok_or_else(|| not_found_error(format!("task {task_id} not found or archived")))
 }
 
 fn latest_focus_task(conn: &Connection) -> AppResult<Option<String>> {
@@ -1099,9 +1105,9 @@ fn collect_subtree_ids(conn: &Connection, root_task_id: &str) -> AppResult<Vec<S
 
     while let Some(task_id) = stack.pop() {
         if !visited.insert(task_id.clone()) {
-            return Err(format!(
+            return Err(conflict_error(format!(
                 "detected cycle while traversing task subtree at {task_id}"
-            ));
+            )));
         }
         result.push(task_id.clone());
 
@@ -1227,11 +1233,15 @@ fn ensure_ancestor_chain_valid(
 
     while let Some(task_id) = current_id {
         if !visited.insert(task_id.clone()) {
-            return Err(format!("detected existing cycle involving task {task_id}"));
+            return Err(conflict_error(format!(
+                "detected existing cycle involving task {task_id}"
+            )));
         }
 
         if task_id == blocked_task_id {
-            return Err("cannot reparent task under itself or its descendants".to_string());
+            return Err(validation_error(
+                "cannot reparent task under itself or its descendants",
+            ));
         }
 
         let parent: Option<Option<String>> = conn
@@ -1244,7 +1254,7 @@ fn ensure_ancestor_chain_valid(
             .map_err(to_error)?;
 
         let Some(next_parent) = parent else {
-            return Err(format!("task {task_id} not found or archived"));
+            return Err(not_found_error(format!("task {task_id} not found or archived")));
         };
 
         current_id = next_parent;
@@ -1570,7 +1580,7 @@ fn evaluate_rest_rules(
 fn sanitize_title(raw: &str) -> AppResult<String> {
     let cleaned = raw.trim();
     if cleaned.is_empty() {
-        return Err("title cannot be empty".to_string());
+        return Err(validation_error("title cannot be empty"));
     }
     Ok(cleaned.to_string())
 }
@@ -1578,7 +1588,7 @@ fn sanitize_title(raw: &str) -> AppResult<String> {
 fn sanitize_tag(raw: &str) -> AppResult<String> {
     let cleaned = raw.trim();
     if cleaned.is_empty() {
-        return Err("tag cannot be empty".to_string());
+        return Err(validation_error("tag cannot be empty"));
     }
     Ok(cleaned.to_string())
 }
@@ -1589,9 +1599,9 @@ fn resolve_window(range: Option<String>, now: i64) -> AppResult<(Option<i64>, St
         "day" => Ok((Some(now - 86_400), "day".to_string())),
         "week" => Ok((Some(now - 604_800), "week".to_string())),
         "today" => Ok((Some(local_day_start_ts(now)), "today".to_string())),
-        unsupported => Err(format!(
+        unsupported => Err(validation_error(format!(
             "unsupported range '{unsupported}', expected one of: all, day, week, today"
-        )),
+        ))),
     }
 }
 
@@ -1618,6 +1628,18 @@ fn local_day_start_ts(now: i64) -> i64 {
         .timestamp()
 }
 
-fn to_error(error: impl std::fmt::Display) -> String {
-    error.to_string()
+fn validation_error(message: impl Into<String>) -> AppError {
+    AppError::validation(message)
+}
+
+fn conflict_error(message: impl Into<String>) -> AppError {
+    AppError::conflict(message)
+}
+
+fn not_found_error(message: impl Into<String>) -> AppError {
+    AppError::not_found(message)
+}
+
+fn to_error(error: impl std::fmt::Display) -> AppError {
+    AppError::internal("database operation failed", error.to_string())
 }

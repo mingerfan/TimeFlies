@@ -269,7 +269,7 @@
     } catch (error) {
       lastCommandRunErrorDetail = normalizeError(error);
       if (surfaceError) {
-        notifyError(`${label}失败`, lastCommandRunErrorDetail, `action-error:${label}`);
+        notifyError(`${label}失败`, error, `action-error:${label}`);
       }
       return null;
     } finally {

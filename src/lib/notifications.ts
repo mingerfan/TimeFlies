@@ -1,7 +1,7 @@
 import { browser } from "$app/environment";
 import { writable } from "svelte/store";
 
-import { normalizeError } from "$lib/ui";
+import { extractErrorPayload } from "$lib/ui";
 
 export type NotificationLevel = "error" | "warning" | "info" | "success";
 export type NotificationKind = "generic" | "command" | "system" | "rest-suggestion";
@@ -118,13 +118,24 @@ export function dismissByDedupeKey(dedupeKey: string) {
 
 export function notifyError(title: string, error: unknown, dedupeKey?: string) {
   if (!browser) return;
+  const payload = extractErrorPayload(error);
+  const level = errorLevelFromCode(payload.code);
+  const detailParts: string[] = [];
+  if (payload.code) {
+    detailParts.push(`错误码: ${payload.code}`);
+  }
+  if (payload.detail) {
+    detailParts.push(payload.detail);
+  }
+
   pushNotification({
     kind: "system",
-    level: "error",
+    level,
     title,
-    detail: normalizeError(error),
+    message: payload.message,
+    detail: detailParts.join("\n") || undefined,
     dedupeKey,
-    autoCloseMs: null,
+    autoCloseMs: level === "error" ? null : 7000,
   });
 }
 
@@ -171,4 +182,12 @@ function createNotificationId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function errorLevelFromCode(code: string | undefined): NotificationLevel {
+  if (!code) return "error";
+  if (code === "validation" || code === "conflict" || code === "not_found") {
+    return "warning";
+  }
+  return "error";
 }

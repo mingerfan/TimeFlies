@@ -2,9 +2,61 @@ use std::fs;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-pub type AppResult<T> = Result<T, String>;
+pub type AppResult<T> = Result<T, AppError>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AppError {
+    pub code: String,
+    pub message: String,
+    pub detail: Option<String>,
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(detail) = &self.detail {
+            write!(f, "{}: {} ({detail})", self.code, self.message)
+        } else {
+            write!(f, "{}: {}", self.code, self.message)
+        }
+    }
+}
+
+impl AppError {
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self {
+            code: "validation".to_string(),
+            message: message.into(),
+            detail: None,
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            code: "conflict".to_string(),
+            message: message.into(),
+            detail: None,
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: "not_found".to_string(),
+            message: message.into(),
+            detail: None,
+        }
+    }
+
+    pub fn internal(message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            code: "internal".to_string(),
+            message: message.into(),
+            detail: Some(detail.into()),
+        }
+    }
+}
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -15,29 +67,50 @@ impl AppState {
         let app_data_dir = app
             .path()
             .app_data_dir()
-            .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to resolve app data directory",
+                    format!("failed to resolve app data directory: {error}"),
+                )
+            })?;
 
         fs::create_dir_all(&app_data_dir).map_err(|error| {
-            format!(
+            AppError::internal(
+                "failed to create app data directory",
+                format!(
                 "failed to create app data directory {}: {error}",
                 app_data_dir.display()
+                ),
             )
         })?;
 
         let db_path = app_data_dir.join("timeflies.db");
         let connection = Connection::open(&db_path).map_err(|error| {
-            format!(
-                "failed to open sqlite database {}: {error}",
-                db_path.display()
+            AppError::internal(
+                "failed to open sqlite database",
+                format!(
+                    "failed to open sqlite database {}: {error}",
+                    db_path.display()
+                ),
             )
         })?;
 
         connection
             .pragma_update(None, "foreign_keys", "ON")
-            .map_err(|error| format!("failed to enable sqlite foreign_keys pragma: {error}"))?;
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to initialize sqlite",
+                    format!("failed to enable sqlite foreign_keys pragma: {error}"),
+                )
+            })?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| format!("failed to enable sqlite WAL mode: {error}"))?;
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to initialize sqlite",
+                    format!("failed to enable sqlite WAL mode: {error}"),
+                )
+            })?;
 
         run_migrations(&connection)?;
 
@@ -50,7 +123,12 @@ impl AppState {
 fn run_migrations(connection: &Connection) -> AppResult<()> {
     let current_version: i64 = connection
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
-        .map_err(|error| format!("failed to fetch sqlite user_version: {error}"))?;
+        .map_err(|error| {
+            AppError::internal(
+                "failed to fetch sqlite user_version",
+                format!("failed to fetch sqlite user_version: {error}"),
+            )
+        })?;
 
     if current_version < 1 {
         connection.execute_batch(
@@ -98,7 +176,12 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
             COMMIT;
             ",
         )
-        .map_err(|error| format!("failed to apply sqlite migration v1: {error}"))?;
+        .map_err(|error| {
+            AppError::internal(
+                "failed to apply sqlite migration v1",
+                format!("failed to apply sqlite migration v1: {error}"),
+            )
+        })?;
     }
 
     if current_version < 2 {
@@ -128,7 +211,12 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
                 COMMIT;
                 ",
             )
-            .map_err(|error| format!("failed to apply sqlite migration v2: {error}"))?;
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to apply sqlite migration v2",
+                    format!("failed to apply sqlite migration v2: {error}"),
+                )
+            })?;
     }
 
     if current_version < 3 {
@@ -184,7 +272,12 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
                 COMMIT;
                 ",
             )
-            .map_err(|error| format!("failed to apply sqlite migration v3: {error}"))?;
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to apply sqlite migration v3",
+                    format!("failed to apply sqlite migration v3: {error}"),
+                )
+            })?;
     }
 
     Ok(())
