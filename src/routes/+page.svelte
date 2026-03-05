@@ -1139,6 +1139,53 @@
     padding: 0.56rem 0.7rem;
   }
 
+  @media (min-width: 1680px) and (min-aspect-ratio: 2/1) {
+    .main-stack {
+      grid-template-rows: minmax(18rem, 1.35fr) minmax(12rem, 0.95fr);
+    }
+
+    .session-panel {
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto minmax(0, 1fr) auto;
+      padding: clamp(1rem, 1vw, 1.35rem) 1.05rem;
+      row-gap: 0.5rem;
+    }
+
+    .session-target {
+      font-size: 1.14rem;
+    }
+
+    .session-meta {
+      font-size: 0.92rem;
+    }
+
+    .session-clock {
+      grid-row: 5;
+      margin: 0;
+      text-align: center;
+      font-size: clamp(3.8rem, 6.4vw, 8.8rem);
+      min-height: clamp(7rem, 13.5vw, 12.2rem);
+      padding-block: clamp(0.55rem, 1.35vw, 1.55rem);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .session-actions {
+      grid-row: 7;
+      width: min(100%, 860px);
+      justify-self: center;
+      gap: 0.6rem;
+    }
+
+    .session-actions button {
+      flex: 1 1 0;
+      max-width: 420px;
+      min-height: 2.7rem;
+      font-size: 1rem;
+    }
+  }
+
   @media (max-height: 700px) {
     .detail-screen {
       height: auto;
