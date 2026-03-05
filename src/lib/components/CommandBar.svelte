@@ -42,6 +42,7 @@
   let suggestions = $state<Suggestion[]>([]);
   let activeSuggestionIndex = $state(0);
   let suggestionSignature = $state("");
+  let suppressSuggestions = $state(false);
   let history = $state<string[]>([]);
   let historyCursor = $state<number | null>(null);
   let historyDraft = $state("");
@@ -90,6 +91,10 @@
       suggestions = [];
       return;
     }
+    if (suppressSuggestions) {
+      suggestions = [];
+      return;
+    }
     const { items, signature } = buildSuggestions(value, caretIndex);
     suggestions = items;
     if (signature !== suggestionSignature) {
@@ -114,6 +119,7 @@
 
   function onInput(event: Event) {
     if (event.currentTarget !== inputEl) return;
+    suppressSuggestions = false;
     syncCaret();
     historyCursor = null;
   }
@@ -139,6 +145,22 @@
     }
 
     if (suggestionsOpen) {
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        activeSuggestionIndex =
+          (activeSuggestionIndex - 1 + suggestions.length) % suggestions.length;
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        activeSuggestionIndex = (activeSuggestionIndex + 1) % suggestions.length;
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void applySuggestion(activeSuggestionIndex);
+        return;
+      }
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
         activeSuggestionIndex =
@@ -171,6 +193,10 @@
   async function applySuggestion(index: number) {
     const item = suggestions[index];
     if (!item) return;
+    suppressSuggestions = true;
+    suggestions = [];
+    suggestionSignature = "";
+    activeSuggestionIndex = 0;
     const nextValue = replaceRange(value, item.replaceStart, item.replaceEnd, item.insertText);
     const caretPos = item.replaceStart + item.insertText.length;
     await updateValue(nextValue, caretPos);
@@ -411,41 +437,43 @@
 </script>
 
 <section class="command-bar">
-  <form class="command-form" onsubmit={onSubmit}>
-    <input
-      type="text"
-      bind:value={value}
-      bind:this={inputEl}
-      oninput={onInput}
-      onkeyup={onInputKeyup}
-      onclick={onInputClick}
-      onkeydown={onInputKeydown}
-      placeholder="输入命令（/rename /parent /start /pause /resume /stop /sub）或直接输入任务标题"
-      autocomplete="off"
-      spellcheck="false"
-      disabled={busy}
-      aria-label="命令输入"
-    />
-    <button type="submit" disabled={busy || !value.trim()}>{busy ? "执行中..." : "执行"}</button>
-  </form>
-  {#if suggestionsOpen}
-    <div class="command-suggestions" role="listbox" aria-label="命令补全">
-      {#each suggestions as item, index (item.id)}
-        <button
-          type="button"
-          class="suggestion-item"
-          class:active={index === activeSuggestionIndex}
-          onclick={() => applySuggestion(index)}
-        >
-          <span class="suggestion-label">{item.label}</span>
-          {#if item.meta}
-            <span class="suggestion-meta">{item.meta}</span>
-          {/if}
-        </button>
-      {/each}
-    </div>
-  {/if}
-  <p class="command-hint">Tab 补全，Shift+Tab 反向切换，↑/↓ 历史。Enter 执行，Esc 关闭/清空。支持 `#tag` 自动补全。</p>
+  <div class="command-form-wrap">
+    <form class="command-form" onsubmit={onSubmit}>
+      <input
+        type="text"
+        bind:value={value}
+        bind:this={inputEl}
+        oninput={onInput}
+        onkeyup={onInputKeyup}
+        onclick={onInputClick}
+        onkeydown={onInputKeydown}
+        placeholder="输入命令（/rename /parent /start /pause /resume /stop /sub）或直接输入任务标题"
+        autocomplete="off"
+        spellcheck="false"
+        disabled={busy}
+        aria-label="命令输入"
+      />
+      <button type="submit" disabled={busy || !value.trim()}>{busy ? "执行中..." : "执行"}</button>
+    </form>
+    {#if suggestionsOpen}
+      <div class="command-suggestions" role="listbox" aria-label="命令补全">
+        {#each suggestions as item, index (item.id)}
+          <button
+            type="button"
+            class="suggestion-item"
+            class:active={index === activeSuggestionIndex}
+            onclick={() => applySuggestion(index)}
+          >
+            <span class="suggestion-label">{item.label}</span>
+            {#if item.meta}
+              <span class="suggestion-meta">{item.meta}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+  <p class="command-hint">↑/↓/←/→ 切换补全，Tab 或 Enter 选中。无补全时 ↑/↓ 历史。Esc 关闭/清空。支持 `#tag` 自动补全。</p>
   {#if feedback}
     <p class="command-feedback" class:success={tone === "success"} class:error={tone === "error"} class:warning={tone === "warning"}>
       <span class="feedback-main">{feedback}</span>
@@ -468,6 +496,10 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.45rem;
     align-items: center;
+  }
+
+  .command-form-wrap {
+    position: relative;
   }
 
   .command-form input,
@@ -500,9 +532,17 @@
   }
 
   .command-suggestions {
+    position: absolute;
+    top: calc(100% + 0.34rem);
+    left: 0;
+    right: 0;
+    z-index: 20;
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
+    max-height: min(16rem, 50vh);
+    overflow: auto;
+    overscroll-behavior: contain;
     padding: 0.35rem;
     border: 1px solid #c9d6e6;
     border-radius: 0.6rem;
