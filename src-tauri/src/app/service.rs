@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use chrono::{Local, TimeZone};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -491,17 +491,50 @@ pub fn respond_rest_suggestion(
     };
     let ts = now_ts();
 
-    let updated = conn
-        .execute(
-            "UPDATE rest_suggestions
+    {
+        let tx = conn.transaction().map_err(to_error)?;
+        let updated = tx
+            .execute(
+                "UPDATE rest_suggestions
              SET status = ?1, responded_at = ?2
              WHERE id = ?3 AND status = ?4",
-            params![status, ts, suggestion_id, REST_STATUS_PENDING],
-        )
-        .map_err(to_error)?;
+                params![status, ts, suggestion_id, REST_STATUS_PENDING],
+            )
+            .map_err(to_error)?;
 
-    if updated > 0 {
-        return Ok(());
+        if updated > 0 {
+            if accept {
+                let running_task_id: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM tasks WHERE status = ?1 AND archived_at IS NULL LIMIT 1",
+                        params![STATUS_RUNNING],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(to_error)?;
+
+                if let Some(task_id) = running_task_id {
+                    tx.execute(
+                        "UPDATE tasks SET status = ?1 WHERE id = ?2",
+                        params![STATUS_PAUSED, task_id],
+                    )
+                    .map_err(to_error)?;
+                    append_event(
+                        &tx,
+                        &task_id,
+                        EVENT_PAUSE,
+                        ts,
+                        Some(json!({
+                            "reason": "rest_suggestion_accept",
+                            "suggestion_id": suggestion_id
+                        })),
+                    )?;
+                }
+            }
+
+            tx.commit().map_err(to_error)?;
+            return Ok(());
+        }
     }
 
     let existing: Option<String> = conn
@@ -998,7 +1031,10 @@ fn collect_subtree_ids(conn: &Connection, root_task_id: &str) -> AppResult<Vec<S
     Ok(result)
 }
 
-fn expand_unique_subtree_ids(conn: &Connection, root_task_ids: &[String]) -> AppResult<Vec<String>> {
+fn expand_unique_subtree_ids(
+    conn: &Connection,
+    root_task_ids: &[String],
+) -> AppResult<Vec<String>> {
     let mut expanded = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1041,8 +1077,11 @@ fn hard_delete_task_ids(tx: &Transaction<'_>, task_ids: &[String]) -> AppResult<
             params![task_id],
         )
         .map_err(to_error)?;
-        tx.execute("DELETE FROM time_events WHERE task_id = ?1", params![task_id])
-            .map_err(to_error)?;
+        tx.execute(
+            "DELETE FROM time_events WHERE task_id = ?1",
+            params![task_id],
+        )
+        .map_err(to_error)?;
     }
 
     for task_id in task_ids.iter().rev() {
