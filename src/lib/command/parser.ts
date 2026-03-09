@@ -1,4 +1,5 @@
 export const COMMAND_NAMES = [
+  "new",
   "rename",
   "parent",
   "start",

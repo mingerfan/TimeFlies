@@ -102,6 +102,23 @@ async function executeCommandAction(
   commandName: (typeof COMMAND_NAMES)[number],
   argument: string
 ): Promise<MainExecutionResult> {
+  if (commandName === "new") {
+    const title = argument.trim();
+    if (!title) return failMain("命令错误：/new 需要任务标题");
+
+    const createdTaskId = await context.run.createTask(title, null);
+    if (!createdTaskId) return failMain("创建根任务失败", context.getLastRunErrorDetail());
+    context.selectTask(createdTaskId);
+
+    if (!(await context.ensureSwitchFromActive(createdTaskId))) {
+      return failMain("命令错误：无法切换当前活动任务", context.getLastRunErrorDetail());
+    }
+
+    const started = await context.run.startTask(createdTaskId);
+    if (!started) return failMain("开始根任务失败", context.getLastRunErrorDetail());
+    return succeedMain(`已创建并开始根任务「${title}」`, createdTaskId);
+  }
+
   const selectedTask = context.selectedTask;
   if (!selectedTask) {
     return {
