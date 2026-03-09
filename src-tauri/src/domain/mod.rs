@@ -49,3 +49,28 @@ pub struct OverviewResponse {
     pub notifications: Vec<NotificationRecord>,
     pub tasks: Vec<TaskRecord>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DayTaskBreakdown {
+    pub task_id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub exclusive_seconds: i64,
+    pub share_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FocusSummaryDay {
+    pub date_key: String,
+    pub day_start_ts: i64,
+    pub day_end_ts: i64,
+    pub total_focus_seconds: i64,
+    pub tasks: Vec<DayTaskBreakdown>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FocusSummaryResponse {
+    pub range: String,
+    pub generated_at: i64,
+    pub days: Vec<FocusSummaryDay>,
+}

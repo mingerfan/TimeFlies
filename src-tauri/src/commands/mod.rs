@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use tauri::State;
 
 use crate::app;
-use crate::domain::OverviewResponse;
+use crate::domain::{FocusSummaryResponse, OverviewResponse};
 use crate::infra::{AppError, AppResult, AppState};
 
 fn lock_db<'a>(state: &'a State<'_, AppState>) -> AppResult<MutexGuard<'a, Connection>> {
@@ -26,6 +26,15 @@ pub fn get_overview(
 ) -> AppResult<OverviewResponse> {
     let conn = lock_db(&state)?;
     app::get_overview(&conn, range)
+}
+
+#[tauri::command]
+pub fn get_focus_summary(
+    state: State<'_, AppState>,
+    range: Option<String>,
+) -> AppResult<FocusSummaryResponse> {
+    let conn = lock_db(&state)?;
+    app::get_focus_summary(&conn, range)
 }
 
 #[tauri::command]

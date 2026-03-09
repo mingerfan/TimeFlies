@@ -19,6 +19,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::get_overview,
+            commands::get_focus_summary,
             commands::create_task,
             commands::rename_task,
             commands::archive_task,

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type TaskStatus = "idle" | "running" | "paused" | "stopped";
 export type OverviewRange = "all" | "day" | "week" | "today";
+export type FocusSummaryRange = "today" | "7d" | "30d" | "all";
 export const APP_DATA_CHANGED_EVENT = "timeflies:data-changed";
 
 export interface TaskRecord {
@@ -50,6 +51,28 @@ export interface OverviewResponse {
   tasks: TaskRecord[];
 }
 
+export interface DayTaskBreakdown {
+  task_id: string;
+  parent_id: string | null;
+  title: string;
+  exclusive_seconds: number;
+  share_ratio: number;
+}
+
+export interface FocusSummaryDay {
+  date_key: string;
+  day_start_ts: number;
+  day_end_ts: number;
+  total_focus_seconds: number;
+  tasks: DayTaskBreakdown[];
+}
+
+export interface FocusSummaryResponse {
+  range: FocusSummaryRange;
+  generated_at: number;
+  days: FocusSummaryDay[];
+}
+
 function notifyDataChanged() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(APP_DATA_CHANGED_EVENT));
@@ -61,6 +84,10 @@ export async function ping(): Promise<string> {
 
 export async function getOverview(range: OverviewRange): Promise<OverviewResponse> {
   return invoke<OverviewResponse>("get_overview", { range });
+}
+
+export async function getFocusSummary(range: FocusSummaryRange): Promise<FocusSummaryResponse> {
+  return invoke<FocusSummaryResponse>("get_focus_summary", { range });
 }
 
 export async function createTask(title: string, parentId?: string | null): Promise<string> {

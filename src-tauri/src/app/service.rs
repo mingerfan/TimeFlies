@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Local, TimeZone};
+use chrono::{Duration as ChronoDuration, Local, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::domain::{NotificationRecord, OverviewResponse, RestSuggestionRecord, TaskRecord};
+use crate::domain::{
+    DayTaskBreakdown, FocusSummaryDay, FocusSummaryResponse, NotificationRecord,
+    OverviewResponse, RestSuggestionRecord, TaskRecord,
+};
 use crate::infra::{AppError, AppResult};
 
 const STATUS_IDLE: &str = "idle";
@@ -44,6 +47,21 @@ struct TaskRow {
     title: String,
     status: String,
     created_at: i64,
+}
+
+#[derive(Debug)]
+struct FocusInterval {
+    task_id: String,
+    start_ts: i64,
+    end_ts: i64,
+}
+
+#[derive(Debug)]
+struct SummaryWindow {
+    range: String,
+    range_start: i64,
+    range_end: i64,
+    day_starts: Vec<i64>,
 }
 
 pub fn create_task(
@@ -606,6 +624,87 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
     })
 }
 
+pub fn get_focus_summary(
+    conn: &Connection,
+    range: Option<String>,
+) -> AppResult<FocusSummaryResponse> {
+    let now = now_ts();
+    let window = resolve_summary_window(conn, range, now)?;
+    let tasks = load_tasks_for_reporting(conn)?;
+    let task_lookup = tasks
+        .into_iter()
+        .map(|task| (task.id.clone(), task))
+        .collect::<HashMap<_, _>>();
+    let intervals = collect_focus_intervals(conn, Some(window.range_start), window.range_end)?;
+
+    let mut seconds_by_day: HashMap<i64, HashMap<String, i64>> = HashMap::new();
+    for interval in intervals {
+        let mut cursor = interval.start_ts;
+        while cursor < interval.end_ts {
+            let day_start = local_day_start_ts(cursor);
+            let next_day_start = shift_local_day_start(day_start, 1);
+            let segment_end = interval.end_ts.min(next_day_start);
+            let day_bucket = seconds_by_day.entry(day_start).or_default();
+            *day_bucket.entry(interval.task_id.clone()).or_insert(0) += segment_end - cursor;
+            cursor = segment_end;
+        }
+    }
+
+    let days = window
+        .day_starts
+        .into_iter()
+        .rev()
+        .map(|day_start| {
+            let day_end = shift_local_day_start(day_start, 1).min(window.range_end);
+            let mut task_rows = seconds_by_day.remove(&day_start).unwrap_or_default();
+            let total_focus_seconds = task_rows.values().copied().sum::<i64>();
+            let mut tasks = task_rows
+                .drain()
+                .filter_map(|(task_id, exclusive_seconds)| {
+                    if exclusive_seconds <= 0 {
+                        return None;
+                    }
+                    let task = task_lookup.get(&task_id);
+                    let share_ratio = if total_focus_seconds > 0 {
+                        exclusive_seconds as f64 / total_focus_seconds as f64
+                    } else {
+                        0.0
+                    };
+                    Some(DayTaskBreakdown {
+                        task_id: task_id.clone(),
+                        parent_id: task.and_then(|item| item.parent_id.clone()),
+                        title: task
+                            .map(|item| item.title.clone())
+                            .unwrap_or_else(|| format!("Task {task_id}")),
+                        exclusive_seconds,
+                        share_ratio,
+                    })
+                })
+                .collect::<Vec<_>>();
+            tasks.sort_by(|left, right| {
+                right
+                    .exclusive_seconds
+                    .cmp(&left.exclusive_seconds)
+                    .then_with(|| left.title.cmp(&right.title))
+            });
+
+            FocusSummaryDay {
+                date_key: local_date_key(day_start),
+                day_start_ts: day_start,
+                day_end_ts: day_end,
+                total_focus_seconds,
+                tasks,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(FocusSummaryResponse {
+        range: window.range,
+        generated_at: now,
+        days,
+    })
+}
+
 fn ensure_task_exists(conn: &Connection, task_id: &str) -> AppResult<()> {
     get_task_state(conn, task_id).map(|_| ())
 }
@@ -766,6 +865,30 @@ fn maybe_auto_resume_parent(
 fn load_tasks(conn: &Connection) -> AppResult<Vec<TaskRow>> {
     let mut stmt = conn
         .prepare("SELECT id, parent_id, title, status, created_at FROM tasks WHERE archived_at IS NULL ORDER BY created_at ASC")
+        .map_err(to_error)?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TaskRow {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(to_error)?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(to_error)
+}
+
+fn load_tasks_for_reporting(conn: &Connection) -> AppResult<Vec<TaskRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, parent_id, title, status, created_at
+             FROM tasks
+             ORDER BY created_at ASC",
+        )
         .map_err(to_error)?;
 
     let rows = stmt
@@ -973,6 +1096,19 @@ fn replay_exclusive_seconds(
     window_start: Option<i64>,
     window_end: i64,
 ) -> AppResult<HashMap<String, i64>> {
+    let intervals = collect_focus_intervals(conn, window_start, window_end)?;
+    let mut exclusive: HashMap<String, i64> = HashMap::new();
+    for interval in intervals {
+        *exclusive.entry(interval.task_id).or_insert(0) += interval.end_ts - interval.start_ts;
+    }
+    Ok(exclusive)
+}
+
+fn collect_focus_intervals(
+    conn: &Connection,
+    window_start: Option<i64>,
+    window_end: i64,
+) -> AppResult<Vec<FocusInterval>> {
     let mut stmt = conn
         .prepare("SELECT task_id, event_type, ts FROM time_events ORDER BY ts ASC, id ASC")
         .map_err(to_error)?;
@@ -988,7 +1124,7 @@ fn replay_exclusive_seconds(
         .map_err(to_error)?;
 
     let mut running_since: HashMap<String, i64> = HashMap::new();
-    let mut exclusive: HashMap<String, i64> = HashMap::new();
+    let mut intervals = Vec::new();
 
     for row in rows {
         let (task_id, event_type, ts) = row.map_err(to_error)?;
@@ -998,14 +1134,7 @@ fn replay_exclusive_seconds(
             }
             EVENT_PAUSE | EVENT_STOP => {
                 if let Some(start) = running_since.remove(&task_id) {
-                    add_interval(
-                        &mut exclusive,
-                        &task_id,
-                        start,
-                        ts,
-                        window_start,
-                        window_end,
-                    );
+                    push_interval(&mut intervals, &task_id, start, ts, window_start, window_end);
                 }
             }
             _ => {}
@@ -1013,8 +1142,8 @@ fn replay_exclusive_seconds(
     }
 
     for (task_id, start) in running_since {
-        add_interval(
-            &mut exclusive,
+        push_interval(
+            &mut intervals,
             &task_id,
             start,
             window_end,
@@ -1023,11 +1152,11 @@ fn replay_exclusive_seconds(
         );
     }
 
-    Ok(exclusive)
+    Ok(intervals)
 }
 
-fn add_interval(
-    exclusive: &mut HashMap<String, i64>,
+fn push_interval(
+    intervals: &mut Vec<FocusInterval>,
     task_id: &str,
     start: i64,
     end: i64,
@@ -1038,7 +1167,11 @@ fn add_interval(
     let clipped_end = end.min(window_end);
 
     if clipped_end > clipped_start {
-        *exclusive.entry(task_id.to_string()).or_insert(0) += clipped_end - clipped_start;
+        intervals.push(FocusInterval {
+            task_id: task_id.to_string(),
+            start_ts: clipped_start,
+            end_ts: clipped_end,
+        });
     }
 }
 
@@ -1593,6 +1726,61 @@ fn sanitize_tag(raw: &str) -> AppResult<String> {
     Ok(cleaned.to_string())
 }
 
+fn resolve_summary_window(
+    conn: &Connection,
+    range: Option<String>,
+    now: i64,
+) -> AppResult<SummaryWindow> {
+    let today_start = local_day_start_ts(now);
+    match range.as_deref().unwrap_or("7d") {
+        "today" => Ok(SummaryWindow {
+            range: "today".to_string(),
+            range_start: today_start,
+            range_end: now,
+            day_starts: vec![today_start],
+        }),
+        "7d" => {
+            let range_start = shift_local_day_start(today_start, -6);
+            Ok(SummaryWindow {
+                range: "7d".to_string(),
+                range_start,
+                range_end: now,
+                day_starts: build_day_starts(range_start, today_start),
+            })
+        }
+        "30d" => {
+            let range_start = shift_local_day_start(today_start, -29);
+            Ok(SummaryWindow {
+                range: "30d".to_string(),
+                range_start,
+                range_end: now,
+                day_starts: build_day_starts(range_start, today_start),
+            })
+        }
+        "all" => {
+            let earliest_focus_ts = earliest_focus_event_ts(conn)?;
+            let Some(first_ts) = earliest_focus_ts else {
+                return Ok(SummaryWindow {
+                    range: "all".to_string(),
+                    range_start: today_start,
+                    range_end: now,
+                    day_starts: Vec::new(),
+                });
+            };
+            let range_start = local_day_start_ts(first_ts);
+            Ok(SummaryWindow {
+                range: "all".to_string(),
+                range_start,
+                range_end: now,
+                day_starts: build_day_starts(range_start, today_start),
+            })
+        }
+        unsupported => Err(validation_error(format!(
+            "unsupported summary range '{unsupported}', expected one of: today, 7d, 30d, all"
+        ))),
+    }
+}
+
 fn resolve_window(range: Option<String>, now: i64) -> AppResult<(Option<i64>, String)> {
     match range.as_deref().unwrap_or("all") {
         "all" => Ok((None, "all".to_string())),
@@ -1612,6 +1800,33 @@ fn now_ts() -> i64 {
         .unwrap_or(0)
 }
 
+fn earliest_focus_event_ts(conn: &Connection) -> AppResult<Option<i64>> {
+    conn.query_row(
+        "SELECT MIN(ts)
+         FROM time_events
+         WHERE event_type IN (?1, ?2, ?3, ?4)",
+        params![EVENT_START, EVENT_RESUME, EVENT_PAUSE, EVENT_STOP],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(to_error)
+    .map(|value| value.flatten())
+}
+
+fn build_day_starts(range_start: i64, range_end_day_start: i64) -> Vec<i64> {
+    if range_start > range_end_day_start {
+        return Vec::new();
+    }
+
+    let mut day_starts = Vec::new();
+    let mut cursor = range_start;
+    while cursor <= range_end_day_start {
+        day_starts.push(cursor);
+        cursor = shift_local_day_start(cursor, 1);
+    }
+    day_starts
+}
+
 fn local_day_start_ts(now: i64) -> i64 {
     let Some(local_now) = Local.timestamp_opt(now, 0).single() else {
         return now;
@@ -1626,6 +1841,33 @@ fn local_day_start_ts(now: i64) -> i64 {
         .or_else(|| Local.from_local_datetime(&naive_midnight).latest())
         .unwrap_or(local_now)
         .timestamp()
+}
+
+fn shift_local_day_start(day_start_ts: i64, offset_days: i64) -> i64 {
+    let Some(local_day_start) = Local.timestamp_opt(day_start_ts, 0).single() else {
+        return day_start_ts + offset_days * 86_400;
+    };
+    let target_date = local_day_start.date_naive() + ChronoDuration::days(offset_days);
+    let Some(naive_midnight) = target_date.and_hms_opt(0, 0, 0) else {
+        return day_start_ts + offset_days * 86_400;
+    };
+    Local
+        .from_local_datetime(&naive_midnight)
+        .single()
+        .or_else(|| Local.from_local_datetime(&naive_midnight).earliest())
+        .or_else(|| Local.from_local_datetime(&naive_midnight).latest())
+        .unwrap_or(local_day_start)
+        .timestamp()
+}
+
+fn local_date_key(ts: i64) -> String {
+    Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .or_else(|| Local.timestamp_opt(ts, 0).earliest())
+        .or_else(|| Local.timestamp_opt(ts, 0).latest())
+        .map(|date_time| date_time.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| ts.to_string())
 }
 
 fn validation_error(message: impl Into<String>) -> AppError {

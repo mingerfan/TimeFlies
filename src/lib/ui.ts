@@ -47,8 +47,20 @@ export function formatDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString();
 }
 
+export function formatDateOnly(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString();
+}
+
 export function formatDeviation(ratio: number): string {
   return `${Math.round(Math.max(0, ratio) * 100)}%`;
+}
+
+export function formatShareRatio(ratio: number): string {
+  const percentage = Math.max(0, ratio) * 100;
+  if (percentage >= 10 || Number.isInteger(percentage)) {
+    return `${Math.round(percentage)}%`;
+  }
+  return `${percentage.toFixed(1)}%`;
 }
 
 export function restTriggerLabel(triggerType: RestSuggestionRecord["trigger_type"]): string {

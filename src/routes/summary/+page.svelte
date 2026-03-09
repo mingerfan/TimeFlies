@@ -1,37 +1,30 @@
 <script lang="ts">
   import {
     APP_DATA_CHANGED_EVENT,
-    getOverview,
-    type OverviewRange,
-    type OverviewResponse,
+    getFocusSummary,
+    type FocusSummaryRange,
+    type FocusSummaryResponse,
   } from "$lib/api";
   import { notifyError } from "$lib/notifications";
-  import {
-    formatDate,
-    formatDeviation,
-    formatSeconds,
-    restHeadline,
-    restTriggerLabel,
-  } from "$lib/ui";
+  import { formatDateOnly, formatSeconds, formatShareRatio } from "$lib/ui";
   import { onMount } from "svelte";
 
-  let overview = $state<OverviewResponse | null>(null);
-  let range = $state<OverviewRange>("week");
+  let summary = $state<FocusSummaryResponse | null>(null);
+  let range = $state<FocusSummaryRange>("7d");
   let loading = $state(false);
+  let hideEmptyDays = $state(false);
 
-  const restSuggestion = $derived.by(() => overview?.rest_suggestion ?? null);
-
-  const topByExclusive = $derived.by(() =>
-    [...(overview?.tasks ?? [])]
-      .sort((a, b) => b.exclusive_seconds - a.exclusive_seconds)
-      .slice(0, 10)
-  );
-
-  const topByInclusive = $derived.by(() =>
-    [...(overview?.tasks ?? [])]
-      .sort((a, b) => b.inclusive_seconds - a.inclusive_seconds)
-      .slice(0, 10)
-  );
+  const days = $derived.by(() => {
+    const source = summary?.days ?? [];
+    if (!hideEmptyDays) return source;
+    return source.filter((day) => day.total_focus_seconds > 0);
+  });
+  const rangeOptions: Array<{ value: FocusSummaryRange; label: string }> = [
+    { value: "today", label: "今天" },
+    { value: "7d", label: "近 7 天" },
+    { value: "30d", label: "近 30 天" },
+    { value: "all", label: "全部" },
+  ];
 
   onMount(() => {
     const onDataChanged = () => {
@@ -49,98 +42,95 @@
     void refresh(selectedRange);
   });
 
-  async function refresh(targetRange: OverviewRange = range) {
+  async function refresh(targetRange: FocusSummaryRange = range) {
     loading = true;
     try {
-      overview = await getOverview(targetRange);
+      summary = await getFocusSummary(targetRange);
     } catch (error) {
-      notifyError("刷新统计摘要失败", error, "summary-refresh-error");
+      notifyError("刷新统计摘要失败", error, "focus-summary-refresh-error");
     } finally {
       loading = false;
     }
   }
 
+  function taskBarWidth(shareRatio: number): string {
+    if (shareRatio <= 0) return "0%";
+    return `${Math.max(shareRatio * 100, 2)}%`;
+  }
 </script>
 
 <main class="summary-screen">
   <header class="page-head">
     <div>
       <p class="eyebrow">统计页面</p>
-      <h1>统计摘要</h1>
-      <p class="sub">二级查看面板，不干扰任务执行主流程</p>
+      <h1>每日专注摘要</h1>
+      <p class="sub">按自然日统计专注时长，并拆平展示每个任务的占比。</p>
     </div>
-    <div class="range-switch">
-      <button type="button" class:active={range === "all"} onclick={() => (range = "all")}>全部</button>
-      <button type="button" class:active={range === "week"} onclick={() => (range = "week")}>近 7 天</button>
-      <button type="button" class:active={range === "day"} onclick={() => (range = "day")}>近 24 小时</button>
+    <div class="controls">
+      <div class="range-switch" role="tablist" aria-label="统计范围">
+        {#each rangeOptions as option}
+          <button
+            type="button"
+            class:active={range === option.value}
+            onclick={() => (range = option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
+      </div>
+      <label class="filter-toggle">
+        <input type="checkbox" bind:checked={hideEmptyDays} />
+        <span>隐藏空白日</span>
+      </label>
     </div>
   </header>
 
-  <section class="summary-grid">
-    <article class="panel">
-      <div class="panel-head">
-        <h2>自适应休息建议</h2>
-        {#if loading}
-          <span>刷新中...</span>
-        {/if}
-      </div>
-      {#if restSuggestion}
-        <p class="headline">{restHeadline(restSuggestion)}</p>
-        <p class="meta">
-          触发点 {restTriggerLabel(restSuggestion.trigger_type)} · 连续专注
-          {formatSeconds(restSuggestion.focus_seconds)} · 30 分钟切换
-          {restSuggestion.switch_count_30m} 次 · 偏差 {formatDeviation(restSuggestion.deviation_ratio)}
-        </p>
-        <p class="meta">创建时间 {formatDate(restSuggestion.created_at)}</p>
-        <ul class="reasons">
-          {#each restSuggestion.reasons as reason}
-            <li>{reason}</li>
-          {/each}
-        </ul>
-        <p class="meta">处理入口：右下角通知中心</p>
-      {:else}
-        <p class="empty">暂无待处理建议。建议会在任务切换或子任务结束后生成。</p>
-      {/if}
-    </article>
+  {#if loading && !summary}
+    <section class="panel empty-panel">
+      <p class="empty">正在生成统计摘要...</p>
+    </section>
+  {:else if days.length === 0}
+    <section class="panel empty-panel">
+      <p class="empty">当前范围内还没有专注记录。</p>
+    </section>
+  {:else}
+    <section class="summary-timeline">
+      {#each days as day (day.date_key)}
+        <article class="panel day-card">
+          <div class="day-head">
+            <div>
+              <p class="day-label">{formatDateOnly(day.day_start_ts)}</p>
+              <p class="day-key">{day.date_key}</p>
+            </div>
+            <div class="day-total">
+              <span>总专注</span>
+              <strong>{formatSeconds(day.total_focus_seconds)}</strong>
+            </div>
+          </div>
 
-    <article class="panel">
-      <div class="panel-head">
-        <h2>Top Exclusive</h2>
-        <span>{topByExclusive.length} 项</span>
-      </div>
-      {#if topByExclusive.length === 0}
-        <p class="empty">暂无统计数据</p>
-      {:else}
-        <ol class="rank-list">
-          {#each topByExclusive as task}
-            <li>
-              <span>{task.title}</span>
-              <span>{formatSeconds(task.exclusive_seconds)}</span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-    </article>
-
-    <article class="panel">
-      <div class="panel-head">
-        <h2>Top Inclusive</h2>
-        <span>{topByInclusive.length} 项</span>
-      </div>
-      {#if topByInclusive.length === 0}
-        <p class="empty">暂无统计数据</p>
-      {:else}
-        <ol class="rank-list">
-          {#each topByInclusive as task}
-            <li>
-              <span>{task.title}</span>
-              <span>{formatSeconds(task.inclusive_seconds)}</span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-    </article>
-  </section>
+          {#if day.tasks.length === 0}
+            <p class="empty">这一天没有专注记录。</p>
+          {:else}
+            <ol class="task-list">
+              {#each day.tasks as task (task.task_id)}
+                <li class="task-row">
+                  <div class="task-row-head">
+                    <span class="task-title">{task.title}</span>
+                    <span class="task-meta">
+                      {formatSeconds(task.exclusive_seconds)} · {formatShareRatio(task.share_ratio)}
+                    </span>
+                  </div>
+                  <div class="task-bar" aria-hidden="true">
+                    <span style={`width: ${taskBarWidth(task.share_ratio)};`}></span>
+                  </div>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        </article>
+      {/each}
+    </section>
+  {/if}
 </main>
 
 <style>
@@ -182,12 +172,33 @@
 
   .range-switch {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     border: 1px solid #89a9d4;
     border-radius: 0.78rem;
     overflow: hidden;
-    min-width: 290px;
+    min-width: 360px;
     background: #deebff;
+  }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.55rem;
+  }
+
+  .filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: #2a4e7e;
+    font-size: 0.88rem;
+    user-select: none;
+  }
+
+  .filter-toggle input {
+    margin: 0;
+    accent-color: #1f4f92;
   }
 
   .range-switch button {
@@ -203,13 +214,14 @@
     color: #fff;
   }
 
-  .summary-grid {
+  .summary-timeline {
     display: grid;
-    grid-template-columns: 1.1fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 0.95rem;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
+    overflow: auto;
+    padding-right: 0.1rem;
   }
 
   .panel {
@@ -219,117 +231,148 @@
     padding: 0.95rem;
     display: flex;
     flex-direction: column;
-    gap: 0.65rem;
-    min-height: 230px;
+    gap: 0.7rem;
+    min-height: 220px;
     overflow: auto;
     overscroll-behavior: contain;
   }
 
-  .panel-head {
+  .empty-panel {
+    justify-content: center;
+    align-items: center;
+  }
+
+  .day-card {
+    min-height: 260px;
+  }
+
+  .day-head {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    gap: 0.55rem;
+    align-items: flex-start;
+    gap: 0.75rem;
   }
 
-  .panel-head h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  .panel-head span {
-    font-size: 0.8rem;
-    color: #4f6f95;
-  }
-
-  .headline {
-    margin: 0;
-    font-size: 1.04rem;
-    font-weight: 700;
-    color: #173a65;
-  }
-
-  .meta,
+  .day-label,
+  .day-key,
+  .day-total span,
   .empty {
     margin: 0;
-    color: #4e6f95;
-    font-size: 0.86rem;
-    line-height: 1.34;
   }
 
-  .reasons {
-    margin: 0.1rem 0 0;
-    padding-left: 1.1rem;
-    color: #3e618c;
-    font-size: 0.84rem;
+  .day-label {
+    font-size: 1.02rem;
+    font-weight: 700;
+    color: #17365e;
+  }
+
+  .day-key {
+    color: #58779d;
+    font-size: 0.82rem;
+  }
+
+  .day-total {
     display: flex;
     flex-direction: column;
-    gap: 0.28rem;
+    align-items: flex-end;
+    gap: 0.1rem;
+    color: #4b6b92;
   }
 
-  .rank-list {
+  .day-total strong {
+    font-size: 1.02rem;
+    color: #17365e;
+  }
+
+  .task-list {
+    list-style: none;
     margin: 0;
-    padding-left: 1.1rem;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.7rem;
   }
 
-  .rank-list li {
+  .task-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .task-row-head {
     display: flex;
     justify-content: space-between;
+    align-items: baseline;
     gap: 0.8rem;
+  }
+
+  .task-title {
+    color: #143457;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  .task-meta {
+    color: #52739a;
+    font-size: 0.86rem;
+    white-space: nowrap;
+  }
+
+  .task-bar {
+    height: 0.5rem;
+    border-radius: 999px;
+    background: rgba(123, 154, 198, 0.2);
+    overflow: hidden;
+  }
+
+  .task-bar span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #2d6fbd 0%, #6aa3de 100%);
+  }
+
+  .empty {
+    color: #6281a6;
     font-size: 0.9rem;
   }
 
-  button {
-    border: 1px solid #2f629f;
-    border-radius: 0.62rem;
-    background: #2f629f;
-    color: #fff;
-    padding: 0.44rem 0.68rem;
-    cursor: pointer;
-    font: inherit;
-  }
-
-  button:disabled {
-    opacity: 0.56;
-    cursor: not-allowed;
-  }
-
-  @media (max-height: 700px) {
-    .summary-screen {
-      height: auto;
-      min-height: 100%;
-      overflow: visible;
-    }
-
-    .summary-grid {
-      flex: 0 0 auto;
-      min-height: fit-content;
-      overflow: visible;
-    }
-
-    .panel {
-      overflow: visible;
-    }
-  }
-
-  @media (max-width: 1220px) {
-    .summary-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  @media (max-width: 760px) {
+  @media (max-width: 900px) {
     .page-head {
       flex-direction: column;
+      align-items: stretch;
+    }
+
+    .controls {
+      align-items: stretch;
     }
 
     .range-switch {
-      width: 100%;
-      min-width: unset;
+      min-width: 0;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .summary-screen {
+      overflow: auto;
+    }
+
+    .summary-timeline {
+      overflow: visible;
+    }
+
+    .range-switch {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .task-row-head {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
+    }
+
+    .task-meta {
+      white-space: normal;
     }
   }
 </style>
-
