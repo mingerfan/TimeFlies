@@ -38,6 +38,7 @@
   let expandedMiniTaskIds = $state<Set<string>>(new Set());
   let miniAutoRootId = $state<string | null>(null);
   let miniAutoFocusId = $state<string | null>(null);
+  let refreshInFlight = false;
 
   let commandInput = $state("");
   let lastCommandRunErrorDetail = $state<string | null>(null);
@@ -176,14 +177,17 @@
   onMount(() => {
     void refresh();
     const onDataChanged = () => {
-      if (loading || !!currentAction) return;
-      void refresh();
+      if (refreshInFlight || !!currentAction) return;
+      void refresh({ background: true });
     };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
-    const poller = window.setInterval(() => void refresh(), 30_000);
+    const poller = window.setInterval(() => {
+      if (refreshInFlight || !!currentAction) return;
+      void refresh({ background: true });
+    }, 30_000);
     return () => {
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
       window.clearInterval(ticker);
@@ -229,8 +233,13 @@
     }
   });
 
-  async function refresh() {
-    loading = true;
+  async function refresh(options: { background?: boolean } = {}) {
+    const { background = false } = options;
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    if (!background) {
+      loading = true;
+    }
     try {
       const [allSnapshot, daySnapshot] = await Promise.all([
         getOverview("all"),
@@ -251,7 +260,10 @@
     } catch (error) {
       notifyError("刷新任务概览失败", error, "overview-refresh-error");
     } finally {
-      loading = false;
+      refreshInFlight = false;
+      if (!background) {
+        loading = false;
+      }
     }
   }
 
@@ -331,6 +343,22 @@
     if (task.status === "running") return "暂停任务";
     if (task.status === "paused") return "恢复任务";
     return "开始任务";
+  }
+
+  function taskLiveExclusiveSeconds(task: TaskRecord | null): number {
+    if (!task) return 0;
+    if (task.status !== "running" || !overview) {
+      return task.exclusive_seconds;
+    }
+    return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  }
+
+  function taskLiveInclusiveSeconds(task: TaskRecord | null): number {
+    if (!task) return 0;
+    if (!overview || !activePathIds.has(task.id)) {
+      return task.inclusive_seconds;
+    }
+    return task.inclusive_seconds + Math.max(0, nowTs - overview.generated_at);
   }
 
   async function onMiniNodeToggle(event: MouseEvent, task: TaskRecord) {
@@ -475,7 +503,7 @@
     </div>
     <div class="hero-actions">
       <a href="/tree" class="ghost-link">打开任务树工作区</a>
-      <button type="button" class="secondary" onclick={refresh} disabled={loading || !!currentAction}>
+      <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
         {loading ? "刷新中..." : "刷新"}
       </button>
     </div>
@@ -523,8 +551,8 @@
           <section class="detail-top">
             <p class="detail-title" title={selectedTask.title}>{selectedTask.title}</p>
             <p class="meta">
-              创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(selectedTask.exclusive_seconds)} · In
-              {formatSeconds(selectedTask.inclusive_seconds)}
+              创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(taskLiveExclusiveSeconds(selectedTask))} · In
+              {formatSeconds(taskLiveInclusiveSeconds(selectedTask))}
             </p>
           </section>
         {:else}
@@ -543,7 +571,7 @@
           </p>
           <CommandBar
             bind:value={commandInput}
-            busy={loading || !!currentAction}
+            busy={!!currentAction}
             tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}
           />
@@ -610,12 +638,12 @@
                       type="button"
                       class="mini-row-main"
                       onclick={() => (selectedTaskId = row.task.id)}
-                      title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(row.task.exclusive_seconds)} · In ${formatSeconds(row.task.inclusive_seconds)}`}
+                      title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(taskLiveExclusiveSeconds(row.task))} · In ${formatSeconds(taskLiveInclusiveSeconds(row.task))}`}
                     >
                       <span class="mini-row-title">{row.task.title}</span>
                       <span class="mini-row-meta">
-                        {statusLabel(row.task.status)} · Ex {formatSeconds(row.task.exclusive_seconds)} · In
-                        {formatSeconds(row.task.inclusive_seconds)}
+                        {statusLabel(row.task.status)} · Ex {formatSeconds(taskLiveExclusiveSeconds(row.task))} · In
+                        {formatSeconds(taskLiveInclusiveSeconds(row.task))}
                       </span>
                     </button>
 

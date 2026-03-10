@@ -28,6 +28,7 @@
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let commandInput = $state("");
   let lastCommandRunErrorDetail = $state<string | null>(null);
+  let refreshInFlight = false;
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -64,14 +65,17 @@
   onMount(() => {
     void refresh();
     const onDataChanged = () => {
-      if (loading || !!currentAction) return;
-      void refresh();
+      if (refreshInFlight || !!currentAction) return;
+      void refresh({ background: true });
     };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
-    const poller = window.setInterval(() => void refresh(), 15_000);
+    const poller = window.setInterval(() => {
+      if (refreshInFlight || !!currentAction) return;
+      void refresh({ background: true });
+    }, 15_000);
     return () => {
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
       window.clearInterval(ticker);
@@ -89,14 +93,22 @@
     selectedTaskId = overview.tasks[0]?.id ?? null;
   });
 
-  async function refresh() {
-    loading = true;
+  async function refresh(options: { background?: boolean } = {}) {
+    const { background = false } = options;
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    if (!background) {
+      loading = true;
+    }
     try {
       overview = await getOverview("all");
     } catch (error) {
       notifyError("刷新计时页数据失败", error, "timer-refresh-error");
     } finally {
-      loading = false;
+      refreshInFlight = false;
+      if (!background) {
+        loading = false;
+      }
     }
   }
 
@@ -190,7 +202,7 @@
       <h1>任务会话计时器</h1>
       <p class="sub">非番茄模式：只记录任务会话，不做固定时长强制中断</p>
     </div>
-    <button type="button" class="secondary" onclick={refresh} disabled={loading || !!currentAction}>
+    <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
       {loading ? "刷新中..." : "手动刷新"}
     </button>
   </header>
@@ -227,7 +239,7 @@
           <p class="task-meta">输入纯文本可直接创建并开始子任务；需要忽略当前上下文时可用 `/new 根任务标题`。</p>
           <CommandBar
             bind:value={commandInput}
-            busy={loading || !!currentAction}
+            busy={!!currentAction}
             tasks={overview?.tasks ?? []}
             onexecute={onCommandExecute}
           />

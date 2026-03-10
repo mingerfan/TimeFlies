@@ -86,15 +86,6 @@
   const selectedTaskPath = $derived.by(() => selectedTaskPathTitles.join(" / "));
   const selectedTaskPathCompact = $derived.by(() => compactTaskPath(selectedTaskPathTitles));
 
-  const selectedExclusiveSeconds = $derived.by(() => {
-    const task = selectedTask;
-    if (!task) return 0;
-    if (task.status !== "running" || !overview) {
-      return task.exclusive_seconds;
-    }
-    return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
-  });
-
   const normalizedTreeQuery = $derived.by(() => treeQuery.trim().toLowerCase());
 
   const visibleRows = $derived.by(() =>
@@ -410,6 +401,22 @@
     return "开始";
   }
 
+  function taskLiveExclusiveSeconds(task: TaskRecord | null): number {
+    if (!task) return 0;
+    if (task.status !== "running" || !overview) {
+      return task.exclusive_seconds;
+    }
+    return task.exclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  }
+
+  function taskLiveInclusiveSeconds(task: TaskRecord | null): number {
+    if (!task) return 0;
+    if (!overview || !activePathIds.has(task.id)) {
+      return task.inclusive_seconds;
+    }
+    return task.inclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  }
+
   function toggleBatchMode() {
     if (batchMode) {
       batchMode = false;
@@ -657,7 +664,7 @@
         <p class="selected-meta">
           <span>{statusLabel(selectedTask.status)}</span>
           <span class="selected-path" title={selectedTaskPath || "-"}>路径 {selectedTaskPathCompact || "-"}</span>
-          <span>Ex {formatSeconds(selectedExclusiveSeconds)}</span>
+          <span>Ex {formatSeconds(taskLiveExclusiveSeconds(selectedTask))}</span>
         </p>
       {:else}
         <p class="selected-title">未选中任务</p>
@@ -837,7 +844,7 @@
                   class="row-main"
                   onclick={() => (selectedTaskId = row.task.id)}
                   onkeydown={(event) => onTaskRowKeydown(event, row)}
-                  title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(row.task.exclusive_seconds)} · In ${formatSeconds(row.task.inclusive_seconds)}`}
+                  title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(taskLiveExclusiveSeconds(row.task))} · In ${formatSeconds(taskLiveInclusiveSeconds(row.task))}`}
                 >
                   <span class="title">{row.task.title}</span>
                 </button>
