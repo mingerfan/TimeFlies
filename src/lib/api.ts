@@ -59,12 +59,24 @@ export interface DayTaskBreakdown {
   share_ratio: number;
 }
 
+export interface FocusTimelineSegment {
+  task_id: string;
+  parent_id: string | null;
+  title: string;
+  start_ts: number;
+  end_ts: number;
+  start_offset_seconds: number;
+  end_offset_seconds: number;
+  duration_seconds: number;
+}
+
 export interface FocusSummaryDay {
   date_key: string;
   day_start_ts: number;
   day_end_ts: number;
   total_focus_seconds: number;
   tasks: DayTaskBreakdown[];
+  timeline_segments: FocusTimelineSegment[];
 }
 
 export interface FocusSummaryResponse {

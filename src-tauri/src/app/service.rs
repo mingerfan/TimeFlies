@@ -7,8 +7,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::domain::{
-    DayTaskBreakdown, FocusSummaryDay, FocusSummaryResponse, NotificationRecord,
-    OverviewResponse, RestSuggestionRecord, TaskRecord,
+    DayTaskBreakdown, FocusSummaryDay, FocusSummaryResponse, FocusTimelineSegment,
+    NotificationRecord, OverviewResponse, RestSuggestionRecord, TaskRecord,
 };
 use crate::infra::{AppError, AppResult};
 
@@ -638,14 +638,32 @@ pub fn get_focus_summary(
     let intervals = collect_focus_intervals(conn, Some(window.range_start), window.range_end)?;
 
     let mut seconds_by_day: HashMap<i64, HashMap<String, i64>> = HashMap::new();
+    let mut segments_by_day: HashMap<i64, Vec<FocusTimelineSegment>> = HashMap::new();
     for interval in intervals {
         let mut cursor = interval.start_ts;
         while cursor < interval.end_ts {
             let day_start = local_day_start_ts(cursor);
             let next_day_start = shift_local_day_start(day_start, 1);
             let segment_end = interval.end_ts.min(next_day_start);
+            let duration_seconds = segment_end - cursor;
             let day_bucket = seconds_by_day.entry(day_start).or_default();
-            *day_bucket.entry(interval.task_id.clone()).or_insert(0) += segment_end - cursor;
+            *day_bucket.entry(interval.task_id.clone()).or_insert(0) += duration_seconds;
+            let task = task_lookup.get(&interval.task_id);
+            segments_by_day
+                .entry(day_start)
+                .or_default()
+                .push(FocusTimelineSegment {
+                    task_id: interval.task_id.clone(),
+                    parent_id: task.and_then(|item| item.parent_id.clone()),
+                    title: task
+                        .map(|item| item.title.clone())
+                        .unwrap_or_else(|| format!("Task {}", interval.task_id)),
+                    start_ts: cursor,
+                    end_ts: segment_end,
+                    start_offset_seconds: cursor - day_start,
+                    end_offset_seconds: segment_end - day_start,
+                    duration_seconds,
+                });
             cursor = segment_end;
         }
     }
@@ -687,6 +705,13 @@ pub fn get_focus_summary(
                     .cmp(&left.exclusive_seconds)
                     .then_with(|| left.title.cmp(&right.title))
             });
+            let mut timeline_segments = segments_by_day.remove(&day_start).unwrap_or_default();
+            timeline_segments.sort_by(|left, right| {
+                left.start_ts
+                    .cmp(&right.start_ts)
+                    .then_with(|| left.end_ts.cmp(&right.end_ts))
+                    .then_with(|| left.title.cmp(&right.title))
+            });
 
             FocusSummaryDay {
                 date_key: local_date_key(day_start),
@@ -694,6 +719,7 @@ pub fn get_focus_summary(
                 day_end_ts: day_end,
                 total_focus_seconds,
                 tasks,
+                timeline_segments,
             }
         })
         .collect::<Vec<_>>();

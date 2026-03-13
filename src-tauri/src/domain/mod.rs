@@ -60,12 +60,25 @@ pub struct DayTaskBreakdown {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct FocusTimelineSegment {
+    pub task_id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub start_ts: i64,
+    pub end_ts: i64,
+    pub start_offset_seconds: i64,
+    pub end_offset_seconds: i64,
+    pub duration_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FocusSummaryDay {
     pub date_key: String,
     pub day_start_ts: i64,
     pub day_end_ts: i64,
     pub total_focus_seconds: i64,
     pub tasks: Vec<DayTaskBreakdown>,
+    pub timeline_segments: Vec<FocusTimelineSegment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
