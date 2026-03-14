@@ -535,35 +535,6 @@ pub fn respond_rest_suggestion(
             )
             .map_err(to_error)?;
 
-            if accept {
-                let running_task_id: Option<String> = tx
-                    .query_row(
-                        "SELECT id FROM tasks WHERE status = ?1 AND archived_at IS NULL LIMIT 1",
-                        params![STATUS_RUNNING],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(to_error)?;
-
-                if let Some(task_id) = running_task_id {
-                    tx.execute(
-                        "UPDATE tasks SET status = ?1 WHERE id = ?2",
-                        params![STATUS_PAUSED, task_id],
-                    )
-                    .map_err(to_error)?;
-                    append_event(
-                        &tx,
-                        &task_id,
-                        EVENT_PAUSE,
-                        ts,
-                        Some(json!({
-                            "reason": "rest_suggestion_accept",
-                            "suggestion_id": suggestion_id
-                        })),
-                    )?;
-                }
-            }
-
             tx.commit().map_err(to_error)?;
             return Ok(());
         }
@@ -1911,3 +1882,4 @@ fn not_found_error(message: impl Into<String>) -> AppError {
 fn to_error(error: impl std::fmt::Display) -> AppError {
     AppError::internal("database operation failed", error.to_string())
 }
+

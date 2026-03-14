@@ -18,8 +18,12 @@
     formatClock,
     formatDate,
     formatSeconds,
+    getRestElapsedSeconds,
     normalizeError,
+    restSession,
+    startManualRest,
     statusLabel,
+    stopRest,
   } from "$lib/ui";
   import { onMount } from "svelte";
 
@@ -132,6 +136,15 @@
       return task.inclusive_seconds;
     }
     return task.inclusive_seconds + Math.max(0, nowTs - overview.generated_at);
+  });
+
+  const restElapsedSeconds = $derived.by(() =>
+    $restSession.active ? getRestElapsedSeconds($restSession, nowTs) : 0
+  );
+
+  const canStartRest = $derived.by(() => {
+    const task = heroControlTask;
+    return !!task && (task.status === "running" || task.status === "paused");
   });
 
   const dayActiveLiveDelta = $derived.by(() => {
@@ -325,6 +338,24 @@
     await runAction("停止任务", () => stopTask(task.id));
   }
 
+  async function onToggleRest() {
+    if ($restSession.active) {
+      stopRest();
+      return;
+    }
+
+    const task = heroControlTask;
+    if (!task) return;
+    if (task.status === "running") {
+      const paused = await runAction("开始休息", () => pauseTask(task.id));
+      if (paused === null) return;
+    } else if (task.status !== "paused") {
+      return;
+    }
+
+    startManualRest();
+  }
+
   function toggleMiniExpand(taskId: string) {
     const next = new Set(expandedMiniTaskIds);
     if (next.has(taskId)) {
@@ -476,18 +507,17 @@
 </script>
 
 <main class="detail-screen">
-  <header
-    class="hero"
-    class:clickable={!!activeTask}
-    role="button"
-    tabindex={activeTask ? 0 : -1}
-    aria-label="聚焦当前活动任务作为操控目标"
-    onclick={onFocusActiveTask}
-    onkeydown={onHeroKeydown}
-  >
-    <div class="hero-main">
-      <p class="eyebrow">主工作台</p>
-      {#if activeTask}
+  {#if !$restSession.active && activeTask}
+    <header
+      class="hero clickable"
+      role="button"
+      tabindex="0"
+      aria-label="聚焦当前活动任务作为操控目标"
+      onclick={onFocusActiveTask}
+      onkeydown={onHeroKeydown}
+    >
+      <div class="hero-main">
+        <p class="eyebrow">主工作台</p>
         <h1 class="hero-title" title={activeTask.title}>{activeTask.title}</h1>
         <p class="hero-meta">
           <span class="hero-path" title={activeTaskPath || "-"}>路径 {activeTaskPathCompact || "-"}</span>
@@ -496,46 +526,91 @@
         <p class="hero-stats">
           Ex {formatSeconds(activeElapsedSeconds)} · In {formatSeconds(activeInclusiveSeconds)}
         </p>
-      {:else}
-        <h1>暂无活动任务</h1>
-        <p class="hero-meta">请在右侧任务树中开始一个任务</p>
-      {/if}
-    </div>
-    <div class="hero-actions">
-      <a href="/tree" class="ghost-link">打开任务树工作区</a>
-      <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
-        {loading ? "刷新中..." : "刷新"}
-      </button>
-    </div>
-  </header>
+      </div>
+      <div class="hero-actions">
+        <a href="/tree" class="ghost-link">打开任务树工作区</a>
+        <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
+          {loading ? "刷新中..." : "刷新"}
+        </button>
+      </div>
+    </header>
+  {:else}
+    <header class="hero">
+      <div class="hero-main">
+        <p class="eyebrow">主工作台</p>
+        {#if $restSession.active}
+          <h1 class="hero-title">休息中</h1>
+          <p class="hero-meta">
+            <span class="hero-path">
+              已切换为休息计时器
+              {#if activeTask}
+                · 关联任务 {activeTask.title}
+              {/if}
+            </span>
+          </p>
+          <p class="hero-stats">
+            当前任务按暂停语义处理 · 已休息 {formatSeconds(restElapsedSeconds)}
+          </p>
+        {:else}
+          <h1>暂无活动任务</h1>
+          <p class="hero-meta">请在右侧任务树中开始一个任务</p>
+        {/if}
+      </div>
+      <div class="hero-actions">
+        <a href="/tree" class="ghost-link">打开任务树工作区</a>
+        <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
+          {loading ? "刷新中..." : "刷新"}
+        </button>
+      </div>
+    </header>
+  {/if}
 
   <section class="content-grid">
     <section class="main-stack">
       <article class="panel session-panel">
         <div class="session-head">
-          <h2>会话计时器</h2>
+          <h2>{$restSession.active ? "休息计时器" : "会话计时器"}</h2>
           <p>当日已专注 {formatSeconds(todayFocusedSeconds)}</p>
         </div>
-        {#if heroControlTask}
-          <p class="session-target">{heroControlTask.title}</p>
+        {#if heroControlTask || $restSession.active}
+          <p class="session-target">{$restSession.active ? "休息中" : heroControlTask?.title}</p>
           <p class="session-meta">
-            状态 {statusLabel(heroControlTask.status)} · Ex {formatSeconds(timerElapsedSeconds)} · In
-            {formatSeconds(timerInclusiveSeconds)}
+            {#if $restSession.active}
+              当前任务按暂停语义处理 · 已休息 {formatSeconds(restElapsedSeconds)}
+              {#if heroControlTask}
+                · 关联任务 {heroControlTask.title}
+              {/if}
+            {:else if heroControlTask}
+              状态 {statusLabel(heroControlTask.status)} · Ex {formatSeconds(timerElapsedSeconds)} · In
+              {formatSeconds(timerInclusiveSeconds)}
+            {/if}
           </p>
-          <p class="session-clock">{formatClock(timerElapsedSeconds)}</p>
+          <p class="session-clock">
+            {formatClock($restSession.active ? restElapsedSeconds : timerElapsedSeconds)}
+          </p>
+          {#if $restSession.active}
+            <p class="meta">休息正计时持续中，可点击“结束休息”返回任务控制。</p>
+          {/if}
           <div class="session-actions">
-            <button type="button" onclick={onPrimaryToggle} disabled={!!currentAction}>
-              {heroControlTask.status === "running"
+            <button type="button" onclick={onPrimaryToggle} disabled={!!currentAction || !heroControlTask}>
+              {heroControlTask?.status === "running"
                 ? "暂停"
-                : heroControlTask.status === "paused"
+                : heroControlTask?.status === "paused"
                   ? "恢复"
                   : "开始"}
+            </button>
+            <button type="button" class="secondary" onclick={onToggleRest} disabled={!!currentAction || (!$restSession.active && !canStartRest)}>
+              {$restSession.active ? "结束休息" : "休息"}
             </button>
             <button
               type="button"
               class="danger"
               onclick={onStopSelected}
-              disabled={!!currentAction || (heroControlTask.status !== "running" && heroControlTask.status !== "paused")}
+              disabled={
+                !!currentAction ||
+                !heroControlTask ||
+                (heroControlTask.status !== "running" && heroControlTask.status !== "paused")
+              }
             >
               停止
             </button>
@@ -543,6 +618,11 @@
         {:else}
           <p class="session-clock">{formatClock(todayFocusedSeconds)}</p>
           <p class="empty">暂无可操控任务，可先在右侧任务树中选择一个任务。</p>
+          <div class="session-actions">
+            <button type="button" class="secondary" onclick={onToggleRest} disabled={!!currentAction || (!$restSession.active && !canStartRest)}>
+              {$restSession.active ? "结束休息" : "休息"}
+            </button>
+          </div>
         {/if}
       </article>
 
@@ -1294,3 +1374,9 @@
     }
   }
 </style>
+
+
+
+
+
+

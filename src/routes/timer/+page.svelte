@@ -16,8 +16,12 @@
     buildTaskChain,
     formatClock,
     formatSeconds,
+    getRestElapsedSeconds,
     normalizeError,
+    restSession,
+    startManualRest,
     statusLabel,
+    stopRest,
   } from "$lib/ui";
   import { onMount } from "svelte";
 
@@ -46,6 +50,13 @@
     selectedTaskId ? (taskMap.get(selectedTaskId) ?? null) : activeTask
   );
 
+  const restTargetTask = $derived.by(() => activeTask ?? selectedTask);
+
+  const canStartRest = $derived.by(() => {
+    const task = restTargetTask;
+    return !!task && (task.status === "running" || task.status === "paused");
+  });
+
   const selectedTaskPath = $derived.by(() =>
     buildTaskChain(selectedTask?.id ?? null, taskMap)
       .map((task) => task.title)
@@ -61,6 +72,10 @@
     const delta = Math.max(0, nowTs - overview.generated_at);
     return base + delta;
   });
+
+  const restElapsedSeconds = $derived.by(() =>
+    $restSession.active ? getRestElapsedSeconds($restSession, nowTs) : 0
+  );
 
   onMount(() => {
     void refresh();
@@ -90,7 +105,7 @@
       selectedTaskId = overview.active_task_id;
       return;
     }
-    selectedTaskId = overview.tasks[0]?.id ?? null;
+    selectedTaskId = overview.last_used_task_id ?? overview.tasks[0]?.id ?? null;
   });
 
   async function refresh(options: { background?: boolean } = {}) {
@@ -193,14 +208,36 @@
       },
     });
   }
+
+  async function onToggleRest() {
+    if ($restSession.active) {
+      stopRest();
+      return;
+    }
+
+    const task = restTargetTask;
+    if (!task) return;
+    if (task.status === "running") {
+      const paused = await runAction("开始休息", () => pauseTask(task.id));
+      if (paused === null) return;
+    } else if (task.status !== "paused") {
+      return;
+    }
+
+    startManualRest();
+  }
 </script>
 
 <main class="timer-screen">
   <header class="page-head">
     <div>
       <p class="eyebrow">计时页面</p>
-      <h1>任务会话计时器</h1>
-      <p class="sub">非番茄模式：只记录任务会话，不做固定时长强制中断</p>
+      <h1>{$restSession.active ? "休息计时器" : "任务会话计时器"}</h1>
+      <p class="sub">
+        {$restSession.active
+          ? "休息只复用现有暂停语义，前端额外显示休息正计时。"
+          : "非番茄模式：只记录任务会话，不做固定时长强制中断"}
+      </p>
     </div>
     <button type="button" class="secondary" onclick={() => void refresh()} disabled={loading || !!currentAction}>
       {loading ? "刷新中..." : "手动刷新"}
@@ -209,26 +246,49 @@
 
   <section class="timer-main">
     <article class="panel focus-panel">
-      {#if selectedTask}
-        <p class="task-name">{selectedTask.title}</p>
-        <p class="task-path">{selectedTaskPath}</p>
-        <p class="task-meta">状态 {statusLabel(selectedTask.status)}</p>
-        <p class="clock">{formatClock(displayedSeconds)}</p>
-        <p class="task-meta">当前任务累计 {formatSeconds(displayedSeconds)}</p>
+      {#if selectedTask || $restSession.active}
+        <p class="task-name">{$restSession.active ? "休息中" : selectedTask?.title}</p>
+        <p class="task-path">
+          {$restSession.active
+            ? selectedTaskPath
+              ? `关联任务 ${selectedTaskPath}`
+              : "已进入休息正计时"
+            : selectedTaskPath}
+        </p>
+        <p class="task-meta">
+          {$restSession.active
+            ? `当前任务按暂停语义处理 · 已休息 ${formatSeconds(restElapsedSeconds)}`
+            : `状态 ${selectedTask ? statusLabel(selectedTask.status) : "-"}`}
+        </p>
+        <p class="clock">{formatClock($restSession.active ? restElapsedSeconds : displayedSeconds)}</p>
+        <p class="task-meta">
+          {#if $restSession.active}
+            休息正计时持续中，可点击“结束休息”退出显示
+          {:else}
+            当前任务累计 {formatSeconds(displayedSeconds)}
+          {/if}
+        </p>
 
         <div class="actions">
-          <button type="button" onclick={onMainToggle} disabled={!!currentAction}>
-            {selectedTask.status === "running"
+          <button type="button" onclick={onMainToggle} disabled={!!currentAction || !selectedTask}>
+            {selectedTask?.status === "running"
               ? "暂停"
-              : selectedTask.status === "paused"
+              : selectedTask?.status === "paused"
                 ? "恢复"
                 : "开始"}
+          </button>
+          <button type="button" class="secondary" onclick={onToggleRest} disabled={!!currentAction || (!$restSession.active && !canStartRest)}>
+            {$restSession.active ? "结束休息" : "休息"}
           </button>
           <button
             type="button"
             class="danger"
             onclick={onStopSelected}
-            disabled={!!currentAction || (selectedTask.status !== "running" && selectedTask.status !== "paused")}
+            disabled={
+              !!currentAction ||
+              !selectedTask ||
+              (selectedTask.status !== "running" && selectedTask.status !== "paused")
+            }
           >
             停止
           </button>
@@ -246,6 +306,11 @@
         </section>
       {:else}
         <p class="empty">暂无任务。请先在“任务执行”页面创建任务。</p>
+        <div class="actions">
+          <button type="button" class="secondary" disabled>
+            休息
+          </button>
+        </div>
       {/if}
     </article>
   </section>

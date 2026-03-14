@@ -4,6 +4,7 @@
   import {
     APP_DATA_CHANGED_EVENT,
     getOverview,
+    pauseTask,
     respondRestSuggestion,
     type OverviewResponse,
   } from "$lib/api";
@@ -18,6 +19,7 @@
     formatSeconds,
     restHeadline,
     restTriggerLabel,
+    startSuggestedRest,
   } from "$lib/ui";
   import { onMount } from "svelte";
 
@@ -113,9 +115,16 @@
   async function onRespondRestSuggestion(accept: boolean) {
     const suggestion = restSuggestion;
     if (!suggestion) return;
-    await runSidebarAction(accept ? "接受休息建议" : "忽略休息建议", () =>
-      respondRestSuggestion(suggestion.id, accept)
-    );
+    await runSidebarAction(accept ? "接受休息建议" : "忽略休息建议", async () => {
+      const activeTaskId = sidebarOverview?.active_task_id ?? null;
+      if (accept && activeTaskId) {
+        await pauseTask(activeTaskId);
+      }
+      await respondRestSuggestion(suggestion.id, accept);
+      if (accept) {
+        startSuggestedRest(suggestion.id);
+      }
+    });
   }
 </script>
 
@@ -306,4 +315,3 @@
     }
   }
 </style>
-

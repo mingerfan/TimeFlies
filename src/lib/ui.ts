@@ -1,10 +1,108 @@
+import { browser } from "$app/environment";
 import type { RestSuggestionRecord, TaskRecord, TaskStatus } from "$lib/api";
+import { writable } from "svelte/store";
 
 export type AppErrorPayload = {
   code?: string;
   message: string;
   detail?: string;
 };
+
+export type RestSessionSource = "manual" | "suggestion";
+
+export type RestSession = {
+  active: boolean;
+  startedAt: number;
+  source: RestSessionSource;
+  suggestionId: number | null;
+};
+
+const REST_SESSION_STORAGE_KEY = "timeflies:rest-session";
+
+const EMPTY_REST_SESSION: RestSession = {
+  active: false,
+  startedAt: 0,
+  source: "manual",
+  suggestionId: null,
+};
+
+function loadRestSession(): RestSession {
+  if (!browser) return EMPTY_REST_SESSION;
+  const raw = window.localStorage.getItem(REST_SESSION_STORAGE_KEY);
+  if (!raw) return EMPTY_REST_SESSION;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RestSession>;
+    if (
+      parsed.active !== true ||
+      typeof parsed.startedAt !== "number" ||
+      (parsed.source !== "manual" && parsed.source !== "suggestion")
+    ) {
+      return EMPTY_REST_SESSION;
+    }
+
+    return {
+      active: true,
+      startedAt: parsed.startedAt,
+      source: parsed.source,
+      suggestionId: typeof parsed.suggestionId === "number" ? parsed.suggestionId : null,
+    };
+  } catch {
+    return EMPTY_REST_SESSION;
+  }
+}
+
+function persistRestSession(session: RestSession) {
+  if (!browser) return;
+  if (!session.active) {
+    window.localStorage.removeItem(REST_SESSION_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(REST_SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function createRestSessionStore() {
+  const { subscribe, set } = writable<RestSession>(loadRestSession());
+
+  const write = (session: RestSession) => {
+    persistRestSession(session);
+    set(session);
+  };
+
+  return {
+    subscribe,
+    start(source: RestSessionSource, suggestionId: number | null = null) {
+      write({
+        active: true,
+        startedAt: Math.floor(Date.now() / 1000),
+        source,
+        suggestionId,
+      });
+    },
+    stop() {
+      write(EMPTY_REST_SESSION);
+    },
+  };
+}
+
+export const restSession = createRestSessionStore();
+
+export function startManualRest() {
+  restSession.start("manual");
+}
+
+export function startSuggestedRest(suggestionId: number | null = null) {
+  restSession.start("suggestion", suggestionId);
+}
+
+export function stopRest() {
+  restSession.stop();
+}
+
+export function getRestElapsedSeconds(session: RestSession, nowTs: number): number {
+  if (!session.active) return 0;
+  return Math.max(0, nowTs - session.startedAt);
+}
 
 export function statusLabel(status: TaskStatus): string {
   switch (status) {
