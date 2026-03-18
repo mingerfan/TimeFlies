@@ -9,8 +9,8 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
-  import CommandBar from "$lib/components/CommandBar.svelte";
-  import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
+  import CommandBar from "../ConfiguredCommandBar.svelte";
+  import { handleCommandInput, type CommandRunActionOptions } from "../command-handler";
   import { notifyCommandResult, notifyError } from "$lib/notifications";
   import {
     buildSubtreeRecentActivityMap,

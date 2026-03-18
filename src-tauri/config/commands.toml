@@ -1,0 +1,77 @@
+version = 1
+
+[[commands]]
+name = "new"
+description = "创建并立即开始一个根任务"
+handler = "create_root_and_start"
+insert_trailing_space = true
+
+[commands.argument]
+name = "title"
+kind = "text"
+required = true
+placeholder = "根任务标题"
+
+[[commands]]
+name = "rename"
+description = "重命名当前选中任务"
+handler = "rename_selected"
+requires_selected_task = true
+insert_trailing_space = true
+
+[commands.argument]
+name = "title"
+kind = "text"
+required = true
+placeholder = "新标题"
+
+[[commands]]
+name = "parent"
+description = "调整当前选中任务的父任务"
+handler = "reparent_selected"
+requires_selected_task = true
+insert_trailing_space = true
+
+[commands.argument]
+name = "target"
+kind = "parent_target"
+required = true
+placeholder = "root 或 task id / title"
+completion = "parent_target"
+
+[[commands]]
+name = "start"
+description = "开始当前选中任务，必要时自动切换活动任务"
+handler = "start_selected"
+requires_selected_task = true
+
+[[commands]]
+name = "pause"
+description = "暂停当前选中任务"
+handler = "pause_selected"
+requires_selected_task = true
+
+[[commands]]
+name = "resume"
+description = "恢复当前选中任务，必要时自动切换活动任务"
+handler = "resume_selected"
+requires_selected_task = true
+
+[[commands]]
+name = "stop"
+description = "停止当前选中任务"
+handler = "stop_selected"
+requires_selected_task = true
+
+[[commands]]
+name = "sub"
+description = "在当前选中任务下创建并开始一个子任务"
+handler = "create_or_insert_subtask"
+requires_selected_task = true
+insert_trailing_space = true
+
+[commands.argument]
+name = "title"
+kind = "text"
+required = true
+placeholder = "子任务标题"
