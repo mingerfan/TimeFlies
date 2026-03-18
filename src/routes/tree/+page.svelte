@@ -14,7 +14,14 @@
     type TaskRecord,
   } from "$lib/api";
   import { notifyError } from "$lib/notifications";
-  import { buildTaskChain, compactTaskPath, formatSeconds, statusLabel } from "$lib/ui";
+  import {
+    buildSubtreeRecentActivityMap,
+    buildTaskChain,
+    compareTasksByRecentActivity,
+    compactTaskPath,
+    formatSeconds,
+    statusLabel,
+  } from "$lib/ui";
   import { onMount } from "svelte";
 
   type VisibleTaskRow = {
@@ -48,6 +55,10 @@
     return map;
   });
 
+  const subtreeRecentActivityMap = $derived.by(() =>
+    buildSubtreeRecentActivityMap(overview?.tasks ?? [])
+  );
+
   const childrenByParent = $derived.by(() => {
     const map = new Map<string, TaskRecord[]>();
     for (const task of overview?.tasks ?? []) {
@@ -57,7 +68,7 @@
       map.set(task.parent_id, siblings);
     }
     for (const siblings of map.values()) {
-      siblings.sort((a, b) => a.created_at - b.created_at);
+      siblings.sort((a, b) => compareTasksByRecentActivity(a, b, subtreeRecentActivityMap));
     }
     return map;
   });
@@ -65,7 +76,7 @@
   const rootTasks = $derived.by(() =>
     (overview?.tasks ?? [])
       .filter((task) => !task.parent_id)
-      .sort((a, b) => a.created_at - b.created_at)
+      .sort((a, b) => compareTasksByRecentActivity(a, b, subtreeRecentActivityMap))
   );
 
   const selectedTask = $derived.by(() =>

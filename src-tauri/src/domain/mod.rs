@@ -7,6 +7,7 @@ pub struct TaskRecord {
     pub title: String,
     pub status: String,
     pub created_at: i64,
+    pub last_activated_at: Option<i64>,
     pub tags: Vec<String>,
     pub inclusive_seconds: i64,
     pub exclusive_seconds: i64,

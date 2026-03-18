@@ -562,6 +562,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
     let (window_start, resolved_range) = resolve_window(range, now)?;
 
     let tasks = load_tasks(conn)?;
+    let last_activated_by_task = load_last_activated_at(conn)?;
     let tags_by_task = load_tags(conn)?;
     let exclusive_seconds = replay_exclusive_seconds(conn, window_start, now)?;
     let inclusive_seconds = derive_inclusive_seconds(&tasks, &exclusive_seconds);
@@ -578,6 +579,7 @@ pub fn get_overview(conn: &Connection, range: Option<String>) -> AppResult<Overv
             title: task.title,
             status: task.status,
             created_at: task.created_at,
+            last_activated_at: last_activated_by_task.get(&task.id).copied(),
             tags: tags_by_task.get(&task.id).cloned().unwrap_or_default(),
             inclusive_seconds: *inclusive_seconds.get(&task.id).unwrap_or(&0),
             exclusive_seconds: *exclusive_seconds.get(&task.id).unwrap_or(&0),
@@ -901,6 +903,27 @@ fn load_tasks_for_reporting(conn: &Connection) -> AppResult<Vec<TaskRow>> {
         .map_err(to_error)?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(to_error)
+}
+
+fn load_last_activated_at(conn: &Connection) -> AppResult<HashMap<String, i64>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.task_id, MAX(e.ts) AS last_activated_at
+             FROM time_events e
+             INNER JOIN tasks t ON t.id = e.task_id
+             WHERE e.event_type IN (?1, ?2)
+               AND t.archived_at IS NULL
+             GROUP BY e.task_id",
+        )
+        .map_err(to_error)?;
+
+    let rows = stmt
+        .query_map(params![EVENT_START, EVENT_RESUME], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(to_error)?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(to_error)
 }
 
 fn load_tags(conn: &Connection) -> AppResult<HashMap<String, Vec<String>>> {

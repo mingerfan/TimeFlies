@@ -13,7 +13,9 @@
   import { handleCommandInput, type CommandRunActionOptions } from "$lib/command/handler";
   import { notifyCommandResult, notifyError } from "$lib/notifications";
   import {
+    buildSubtreeRecentActivityMap,
     buildTaskChain,
+    compareTasksByRecentActivity,
     compactTaskPath,
     formatClock,
     formatDate,
@@ -55,6 +57,10 @@
     return map;
   });
 
+  const subtreeRecentActivityMap = $derived.by(() =>
+    buildSubtreeRecentActivityMap(overview?.tasks ?? [])
+  );
+
   const childrenByParent = $derived.by(() => {
     const map = new Map<string, TaskRecord[]>();
     for (const task of overview?.tasks ?? []) {
@@ -64,7 +70,7 @@
       map.set(task.parent_id, siblings);
     }
     for (const siblings of map.values()) {
-      siblings.sort((a, b) => a.created_at - b.created_at);
+      siblings.sort((a, b) => compareTasksByRecentActivity(a, b, subtreeRecentActivityMap));
     }
     return map;
   });

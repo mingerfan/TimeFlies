@@ -240,6 +240,67 @@ export function buildTaskChain(
   return chain.reverse();
 }
 
+export function taskOwnRecentActivityTs(task: TaskRecord): number {
+  return task.last_activated_at ?? task.created_at;
+}
+
+export function buildSubtreeRecentActivityMap(tasks: TaskRecord[]): Map<string, number> {
+  const childrenByParent = new Map<string, TaskRecord[]>();
+  const taskMap = new Map<string, TaskRecord>();
+
+  for (const task of tasks) {
+    taskMap.set(task.id, task);
+    if (!task.parent_id) continue;
+    const siblings = childrenByParent.get(task.parent_id) ?? [];
+    siblings.push(task);
+    childrenByParent.set(task.parent_id, siblings);
+  }
+
+  const memo = new Map<string, number>();
+  const visiting = new Set<string>();
+
+  const visit = (taskId: string): number => {
+    const cached = memo.get(taskId);
+    if (cached !== undefined) return cached;
+
+    const task = taskMap.get(taskId);
+    if (!task) return 0;
+    if (visiting.has(taskId)) return taskOwnRecentActivityTs(task);
+
+    visiting.add(taskId);
+    let latest = taskOwnRecentActivityTs(task);
+    for (const child of childrenByParent.get(taskId) ?? []) {
+      latest = Math.max(latest, visit(child.id));
+    }
+    visiting.delete(taskId);
+    memo.set(taskId, latest);
+    return latest;
+  };
+
+  for (const task of tasks) {
+    visit(task.id);
+  }
+
+  return memo;
+}
+
+export function compareTasksByRecentActivity(
+  left: TaskRecord,
+  right: TaskRecord,
+  subtreeRecentActivityMap?: Map<string, number>
+): number {
+  const leftTs = subtreeRecentActivityMap?.get(left.id) ?? taskOwnRecentActivityTs(left);
+  const rightTs = subtreeRecentActivityMap?.get(right.id) ?? taskOwnRecentActivityTs(right);
+  if (leftTs !== rightTs) return rightTs - leftTs;
+
+  const leftOwnTs = taskOwnRecentActivityTs(left);
+  const rightOwnTs = taskOwnRecentActivityTs(right);
+  if (leftOwnTs !== rightOwnTs) return rightOwnTs - leftOwnTs;
+
+  if (left.created_at !== right.created_at) return right.created_at - left.created_at;
+  return left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
+}
+
 export function compactTaskPath(
   titles: string[],
   options: { maxSegments?: number; tailSegments?: number; maxSegmentChars?: number } = {}

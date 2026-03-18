@@ -11,6 +11,7 @@ export interface TaskRecord {
   title: string;
   status: TaskStatus;
   created_at: number;
+  last_activated_at: number | null;
   tags: string[];
   inclusive_seconds: number;
   exclusive_seconds: number;
