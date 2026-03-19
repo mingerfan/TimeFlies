@@ -808,7 +808,7 @@
     {:else if displayRows.length === 0}
       <p class="empty">没有匹配“{treeQuery}”的任务。</p>
     {:else}
-      <div class="tree-frame">
+      <div class="tree-frame scroll-hint">
         <ul class="tree-list" role="tree" aria-label="任务树">
           {#each displayRows as row (row.task.id)}
             <li class="tree-item">

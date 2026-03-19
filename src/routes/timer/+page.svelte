@@ -245,7 +245,7 @@
   </header>
 
   <section class="timer-main">
-    <article class="panel focus-panel">
+    <article class="panel focus-panel scroll-hint">
       {#if selectedTask || $restSession.active}
         <p class="task-name">{$restSession.active ? "休息中" : selectedTask?.title}</p>
         <p class="task-path">

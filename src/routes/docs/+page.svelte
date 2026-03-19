@@ -7,7 +7,7 @@
     </div>
   </header>
 
-  <section class="panel">
+  <section class="panel scroll-hint">
     <div class="panel-head">
       <h2>核心命令</h2>
       <p>默认作用于“当前操控目标”任务</p>
@@ -40,7 +40,7 @@
     </div>
   </section>
 
-  <section class="panel notes-panel">
+  <section class="panel notes-panel scroll-hint">
     <h2>操作说明</h2>
     <ul class="notes">
       <li>任务详情页顶部主工作台可一键切换操控目标到当前活动任务。</li>

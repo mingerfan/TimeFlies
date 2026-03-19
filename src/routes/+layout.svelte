@@ -129,7 +129,7 @@
 </script>
 
 <main class="app-shell">
-  <aside class="sidebar">
+  <aside class="sidebar scroll-hint">
     <div class="brand">
       <p class="app-name">TimeFlies</p>
       <p class="title">任务时间台</p>
@@ -171,33 +171,37 @@
 
   :global(*) {
     box-sizing: border-box;
-    scrollbar-width: thin;
-    scrollbar-color: #5b7faa #d7e3f2;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 
   :global(*::-webkit-scrollbar) {
-    width: 10px;
-    height: 10px;
+    display: none;
+    width: 0;
+    height: 0;
   }
 
-  :global(*::-webkit-scrollbar-track) {
-    background: #d7e3f2;
-    border-radius: 999px;
-  }
-
-  :global(*::-webkit-scrollbar-thumb) {
-    background: linear-gradient(180deg, #7e97bb 0%, #5576a7 100%);
-    border-radius: 999px;
-    border: 1px solid #edf3fc;
-    background-clip: padding-box;
-  }
-
-  :global(*::-webkit-scrollbar-thumb:hover) {
-    background: linear-gradient(180deg, #6b87b0 0%, #446794 100%);
-  }
-
-  :global(*::-webkit-scrollbar-corner) {
-    background: #d7e3f2;
+  :global(.scroll-hint) {
+    --scroll-hint-surface: rgba(255, 255, 255, 0.96);
+    --scroll-hint-clear: rgba(255, 255, 255, 0);
+    --scroll-hint-shadow: rgba(20, 46, 85, 0.16);
+    background-image:
+      linear-gradient(to bottom, var(--scroll-hint-surface) 0%, var(--scroll-hint-clear) 100%),
+      linear-gradient(to top, var(--scroll-hint-surface) 0%, var(--scroll-hint-clear) 100%),
+      radial-gradient(farthest-side at 50% 0, var(--scroll-hint-shadow) 0%, transparent 72%),
+      radial-gradient(farthest-side at 50% 100%, var(--scroll-hint-shadow) 0%, transparent 72%) !important;
+    background-repeat: no-repeat !important;
+    background-position:
+      center top,
+      center bottom,
+      center top,
+      center bottom !important;
+    background-size:
+      100% 1.15rem,
+      100% 1.15rem,
+      100% 0.6rem,
+      100% 0.6rem !important;
+    background-attachment: local, local, scroll, scroll !important;
   }
 
   .app-shell {
@@ -209,6 +213,9 @@
   }
 
   .sidebar {
+    --scroll-hint-surface: #eef2f8;
+    --scroll-hint-clear: rgba(238, 242, 248, 0);
+    --scroll-hint-shadow: rgba(20, 46, 85, 0.14);
     background: linear-gradient(180deg, #f6f0e2 0%, #edf3ff 100%);
     border-right: 1px solid rgba(20, 46, 85, 0.16);
     padding: 1rem 0.85rem;

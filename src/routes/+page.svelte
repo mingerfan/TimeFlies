@@ -647,7 +647,7 @@
           </section>
         {/if}
 
-        <section class="detail-command">
+        <section class="detail-command scroll-hint">
           <h2>命令模式</h2>
           <p class="meta">
             当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
@@ -695,7 +695,7 @@
         {:else if miniTreeRows.length === 0}
           <p class="empty">当前任务系暂无节点</p>
         {:else}
-          <div class="mini-tree-frame">
+          <div class="mini-tree-frame scroll-hint">
             <ul class="mini-list" role="tree" aria-label="当前任务系任务树">
               {#each miniTreeRows as row (row.task.id)}
                 <li class="mini-item">
@@ -1092,23 +1092,6 @@
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    scrollbar-width: thin;
-    scrollbar-color: #b5c1d2 #edf2f9;
-  }
-
-  .mini-tree-frame::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-
-  .mini-tree-frame::-webkit-scrollbar-thumb {
-    background: #b5c1d2;
-    border-radius: 99px;
-  }
-
-  .mini-tree-frame::-webkit-scrollbar-track {
-    background: #edf2f9;
-    border-radius: 99px;
   }
 
   .mini-list {

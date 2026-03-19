@@ -145,7 +145,7 @@
   }
 </script>
 
-<main class="summary-screen">
+<main class="summary-screen scroll-hint">
   <header class="page-head">
     <div>
       <p class="eyebrow">统计页面</p>
@@ -195,7 +195,7 @@
               <span>任务标签</span>
               <span>累计时长</span>
             </div>
-            <div class="legend-list">
+            <div class="legend-list scroll-hint">
               {#each legendItems as item (item.taskId)}
                 <div class="legend-row">
                   <span class="legend-task">
@@ -223,7 +223,7 @@
               {/each}
             </div>
 
-            <div class="timeline-rows">
+            <div class="timeline-rows scroll-hint">
               {#each days as day (day.date_key)}
                 <article class="timeline-row-grid">
                   <div class="day-meta">
@@ -282,7 +282,7 @@
               {#if day.tasks.length === 0}
                 <p class="empty">这一天没有专注记录。</p>
               {:else}
-                <ol class="task-list">
+                <ol class="task-list scroll-hint">
                   {#each day.tasks as task (task.task_id)}
                     <li class="task-row">
                       <div class="task-row-head">

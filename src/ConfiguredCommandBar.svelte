@@ -484,7 +484,7 @@
       <button type="submit" disabled={busy || !value.trim()}>{busy ? "执行中..." : "执行"}</button>
     </form>
     {#if suggestionsOpen}
-      <div class="command-suggestions" role="listbox" aria-label="命令补全">
+      <div class="command-suggestions scroll-hint" role="listbox" aria-label="命令补全">
         {#each suggestions as item, index (item.id)}
           <button
             type="button"
