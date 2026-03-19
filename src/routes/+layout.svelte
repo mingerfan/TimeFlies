@@ -250,14 +250,13 @@
   .nav a {
     text-decoration: none;
     color: #26466d;
-    border: 1px solid transparent;
     border-radius: 0.65rem;
     padding: 0.52rem 0.62rem;
     font-size: 0.92rem;
+    background: transparent;
   }
 
   .nav a.active {
-    border-color: #20497e;
     background: #dbe8ff;
     color: #15365f;
     font-weight: 600;

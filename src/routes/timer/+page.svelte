@@ -439,23 +439,34 @@
   }
 
   button {
-    border: 1px solid #2f629f;
+    border: none;
     border-radius: 0.62rem;
     background: #2f629f;
     color: #fff;
     padding: 0.5rem 0.72rem;
     cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
   }
 
   button.secondary {
-    border-color: #2f629f;
-    background: #f2f7ff;
+    background: #edf3ff;
     color: #2f629f;
   }
 
   button.danger {
     background: #8b2a2a;
-    border-color: #8b2a2a;
+  }
+
+  button:hover:not(:disabled) {
+    background: #28578f;
+  }
+
+  button.secondary:hover:not(:disabled) {
+    background: #e2ecff;
+  }
+
+  button.danger:hover:not(:disabled) {
+    background: #742121;
   }
 
   button:disabled {
@@ -493,3 +504,4 @@
     }
   }
 </style>
+

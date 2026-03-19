@@ -516,13 +516,18 @@
   }
 
   .command-form button {
-    border: 1px solid #2f629f;
+    border: none;
     border-radius: 0.62rem;
     background: #2f629f;
     color: #fff;
     padding: 0.5rem 0.74rem;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 120ms ease, opacity 120ms ease;
+  }
+
+  .command-form button:hover:not(:disabled) {
+    background: #28578f;
   }
 
   .command-form button:disabled,
@@ -633,3 +638,4 @@
     color: #7f1a1a;
   }
 </style>
+

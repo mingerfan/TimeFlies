@@ -1007,7 +1007,6 @@
 
   .selection-actions > .active,
   .action-btn.active {
-    border-color: #b46868;
     background: #ffecec;
     color: #7f1f1f;
   }
@@ -1284,8 +1283,8 @@
   }
 
   .row-quick {
-    border: 1px solid #d0d7de;
-    background: #ffffff;
+    border: none;
+    background: #f1f4f8;
     color: #4b5563;
     width: 1.4rem;
     height: 1.4rem;
@@ -1302,9 +1301,8 @@
 
   .tree-row:hover .row-quick,
   .tree-row:focus-within .row-quick {
-    border-color: #9aa4b2;
     color: #1f2937;
-    background: #f8fafc;
+    background: #e7edf5;
     opacity: 1;
     pointer-events: auto;
   }
@@ -1340,13 +1338,14 @@
   }
 
   button {
-    border: 1px solid #2f629f;
+    border: none;
     border-radius: 0.62rem;
     background: #2f629f;
     color: #fff;
     padding: 0.5rem 0.72rem;
     font-size: 0.86rem;
     cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
   }
 
   .action-btn {
@@ -1358,69 +1357,57 @@
   }
 
   .action-primary {
-    border-color: #2f629f;
     background: #2f629f;
     color: #fff;
   }
 
   .action-primary:hover:not(:disabled) {
-    background: #1f4f92;
-    border-color: #1f4f92;
+    background: #28578f;
   }
 
   .action-secondary {
-    border-color: #99b5da;
-    background: #f1f6ff;
+    background: #edf3ff;
     color: #2f5688;
   }
 
   .action-secondary:hover:not(:disabled) {
-    background: #e8f1ff;
-    border-color: #7aa3d5;
+    background: #e2ecff;
   }
 
   .action-subtle {
-    border-color: #d0d7de;
-    background: #ffffff;
+    background: #f1f4f8;
     color: #374151;
   }
 
   .action-subtle:hover:not(:disabled) {
-    background: #f3f4f6;
-    border-color: #9aa4b2;
+    background: #e7edf5;
   }
 
   .action-danger {
-    border-color: #c87373;
-    background: #ffecec;
+    background: #ffe9e9;
     color: #7f1f1f;
   }
 
   .action-danger:hover:not(:disabled) {
-    background: #ffe0e0;
-    border-color: #b46868;
+    background: #ffdede;
   }
 
   .action-danger.active {
     background: #8b2a2a;
-    border-color: #8b2a2a;
     color: #fff;
   }
 
   button.secondary {
-    border-color: #2f629f;
-    background: #f2f7ff;
+    background: #edf3ff;
     color: #2f629f;
   }
 
   button.danger {
     background: #8b2a2a;
-    border-color: #8b2a2a;
   }
 
   button.subtle-danger {
-    border-color: #c87373;
-    background: #ffecec;
+    background: #ffe9e9;
     color: #7f1f1f;
   }
 
@@ -1493,3 +1480,6 @@
     }
   }
 </style>
+
+
+

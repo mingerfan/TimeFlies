@@ -764,8 +764,7 @@
   }
 
   .hero {
-    background: rgba(255, 255, 255, 0.88);
-    border: 1px solid rgba(65, 97, 143, 0.25);
+    background: rgba(255, 255, 255, 0.9);
     border-radius: 1rem;
     padding: 1rem 1.1rem;
     display: flex;
@@ -784,8 +783,7 @@
   }
 
   .hero.clickable:hover {
-    border-color: rgba(65, 97, 143, 0.42);
-    background: rgba(255, 255, 255, 0.95);
+    background: rgba(248, 251, 255, 0.96);
   }
 
   .eyebrow {
@@ -848,10 +846,9 @@
   .ghost-link {
     text-decoration: none;
     color: #2d4f7d;
-    border: 1px solid #89a9d4;
     border-radius: 0.62rem;
     padding: 0.46rem 0.66rem;
-    background: #eff6ff;
+    background: #eef4ff;
   }
 
   .content-grid {
@@ -874,8 +871,7 @@
   }
 
   .panel {
-    background: rgba(255, 255, 255, 0.88);
-    border: 1px solid rgba(65, 97, 143, 0.28);
+    background: rgba(255, 255, 255, 0.9);
     border-radius: 1rem;
     padding: 0.9rem;
   }
@@ -898,13 +894,13 @@
 
   .detail-top,
   .detail-command {
-    border-top: 1px dashed #bfd2ef;
-    padding-top: 0.72rem;
+    background: transparent;
+    border-radius: 0;
+    padding: 0;
   }
 
   .detail-top {
-    border-top: none;
-    padding-top: 0;
+    background: transparent;
   }
 
   .detail-title {
@@ -983,9 +979,11 @@
   }
 
   .detail-command {
+    border-top: 1px solid #d8dee4;
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
+    padding-top: 0.72rem;
     padding-right: 0.14rem;
   }
 
@@ -1229,9 +1227,9 @@
   .mini-row-quick {
     width: 1.42rem;
     height: 1.42rem;
-    border: 1px solid #d0d7de;
+    border: none;
     border-radius: 0.3rem;
-    background: #fff;
+    background: #f1f4f8;
     color: #4b5563;
     padding: 0;
     display: grid;
@@ -1247,9 +1245,8 @@
   .mini-tree-row:focus-within .mini-row-quick {
     opacity: 1;
     pointer-events: auto;
-    border-color: #9aa4b2;
     color: #1f2937;
-    background: #f8fafc;
+    background: #e7edf5;
   }
 
   .mini-row-quick:disabled {
@@ -1262,23 +1259,34 @@
   }
 
   button {
-    border: 1px solid #2f629f;
+    border: none;
     border-radius: 0.62rem;
     background: #2f629f;
     color: #fff;
     padding: 0.5rem 0.72rem;
     cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
   }
 
   button.secondary {
-    border-color: #2f629f;
-    background: #f2f7ff;
+    background: #edf3ff;
     color: #2f629f;
   }
 
   button.danger {
     background: #8b2a2a;
-    border-color: #8b2a2a;
+  }
+
+  button:hover:not(:disabled) {
+    background: #28578f;
+  }
+
+  button.secondary:hover:not(:disabled) {
+    background: #e2ecff;
+  }
+
+  button.danger:hover:not(:disabled) {
+    background: #742121;
   }
 
   button:disabled {
