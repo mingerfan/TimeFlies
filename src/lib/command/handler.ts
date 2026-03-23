@@ -3,6 +3,7 @@ import {
   createTask,
   insertSubtaskAndStart,
   pauseTask,
+  adjustTaskFocus,
   renameTask,
   reparentTask,
   resumeTask,
@@ -90,6 +91,10 @@ function createCommandRunApi(runAction: CommandRunAction): CommandRunApi {
       (await runAction("恢复任务", () => resumeTask(taskId), { surfaceError: false })) !== null,
     stopTask: async (taskId) =>
       (await runAction("停止任务", () => stopTask(taskId), { surfaceError: false })) !== null,
+    adjustTaskFocus: async (taskId, deltaSeconds) =>
+      (await runAction("修正专注时间", () => adjustTaskFocus(taskId, deltaSeconds), {
+        surfaceError: false,
+      })) !== null,
     insertSubtaskAndStart: (parentTaskId, title) =>
       runAction("插入子任务", () => insertSubtaskAndStart(parentTaskId, title), {
         surfaceError: false,
@@ -100,3 +105,4 @@ function createCommandRunApi(runAction: CommandRunAction): CommandRunApi {
       })) !== null,
   };
 }
+

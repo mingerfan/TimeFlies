@@ -21,6 +21,7 @@ const EVENT_START: &str = "start";
 const EVENT_PAUSE: &str = "pause";
 const EVENT_RESUME: &str = "resume";
 const EVENT_STOP: &str = "stop";
+const EVENT_ADJUST: &str = "adjust";
 const EVENT_REPARENT: &str = "reparent";
 const EVENT_TAG_ADD: &str = "tag_add";
 const EVENT_TAG_REMOVE: &str = "tag_remove";
@@ -54,6 +55,13 @@ struct FocusInterval {
     task_id: String,
     start_ts: i64,
     end_ts: i64,
+}
+
+#[derive(Debug)]
+struct FocusAdjustment {
+    task_id: String,
+    ts: i64,
+    delta_seconds: i64,
 }
 
 #[derive(Debug)]
@@ -322,6 +330,39 @@ pub fn stop_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     if should_trigger_subtask_rest {
         create_rest_suggestion(conn, REST_TRIGGER_SUBTASK_END, Some(task_id.as_str()), ts)?;
     }
+
+    Ok(())
+}
+
+pub fn adjust_task_focus(
+    conn: &mut Connection,
+    task_id: String,
+    delta_seconds: i64,
+) -> AppResult<()> {
+    ensure_task_exists(conn, &task_id)?;
+    if delta_seconds == 0 {
+        return Err(validation_error("delta_seconds cannot be zero"));
+    }
+
+    let now = now_ts();
+    let total_focus_seconds = task_total_focus_seconds(conn, &task_id, now)?;
+    if total_focus_seconds + delta_seconds < 0 {
+        return Err(validation_error(
+            "adjustment would make task focus time negative",
+        ));
+    }
+
+    let tx = conn.transaction().map_err(to_error)?;
+    append_event(
+        &tx,
+        &task_id,
+        EVENT_ADJUST,
+        now,
+        Some(json!({
+            "delta_seconds": delta_seconds
+        })),
+    )?;
+    tx.commit().map_err(to_error)?;
 
     Ok(())
 }
@@ -641,6 +682,12 @@ pub fn get_focus_summary(
         }
     }
 
+    for adjustment in collect_focus_adjustments(conn, Some(window.range_start), window.range_end)? {
+        let day_start = local_day_start_ts(adjustment.ts);
+        let day_bucket = seconds_by_day.entry(day_start).or_default();
+        *day_bucket.entry(adjustment.task_id).or_insert(0) += adjustment.delta_seconds;
+    }
+
     let days = window
         .day_starts
         .into_iter()
@@ -648,20 +695,18 @@ pub fn get_focus_summary(
         .map(|day_start| {
             let day_end = shift_local_day_start(day_start, 1).min(window.range_end);
             let mut task_rows = seconds_by_day.remove(&day_start).unwrap_or_default();
+            task_rows.retain(|_, exclusive_seconds| *exclusive_seconds > 0);
             let total_focus_seconds = task_rows.values().copied().sum::<i64>();
             let mut tasks = task_rows
                 .drain()
-                .filter_map(|(task_id, exclusive_seconds)| {
-                    if exclusive_seconds <= 0 {
-                        return None;
-                    }
+                .map(|(task_id, exclusive_seconds)| {
                     let task = task_lookup.get(&task_id);
                     let share_ratio = if total_focus_seconds > 0 {
                         exclusive_seconds as f64 / total_focus_seconds as f64
                     } else {
                         0.0
                     };
-                    Some(DayTaskBreakdown {
+                    DayTaskBreakdown {
                         task_id: task_id.clone(),
                         parent_id: task.and_then(|item| item.parent_id.clone()),
                         title: task
@@ -669,7 +714,7 @@ pub fn get_focus_summary(
                             .unwrap_or_else(|| format!("Task {task_id}")),
                         exclusive_seconds,
                         share_ratio,
-                    })
+                    }
                 })
                 .collect::<Vec<_>>();
             tasks.sort_by(|left, right| {
@@ -743,7 +788,7 @@ fn latest_used_task(conn: &Connection) -> AppResult<Option<String>> {
         "SELECT e.task_id
          FROM time_events e
          INNER JOIN tasks t ON t.id = e.task_id
-         WHERE e.event_type IN ('start', 'resume', 'pause', 'stop')
+         WHERE e.event_type IN ('start', 'resume', 'pause', 'stop', 'adjust')
            AND t.archived_at IS NULL
          ORDER BY e.ts DESC, e.id DESC
          LIMIT 1",
@@ -1121,6 +1166,9 @@ fn replay_exclusive_seconds(
     for interval in intervals {
         *exclusive.entry(interval.task_id).or_insert(0) += interval.end_ts - interval.start_ts;
     }
+    for adjustment in collect_focus_adjustments(conn, window_start, window_end)? {
+        *exclusive.entry(adjustment.task_id).or_insert(0) += adjustment.delta_seconds;
+    }
     Ok(exclusive)
 }
 
@@ -1173,6 +1221,50 @@ fn collect_focus_intervals(
     }
 
     Ok(intervals)
+}
+
+fn collect_focus_adjustments(
+    conn: &Connection,
+    window_start: Option<i64>,
+    window_end: i64,
+) -> AppResult<Vec<FocusAdjustment>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT task_id, ts, payload
+             FROM time_events
+             WHERE event_type = ?1
+             ORDER BY ts ASC, id ASC",
+        )
+        .map_err(to_error)?;
+
+    let rows = stmt
+        .query_map(params![EVENT_ADJUST], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(to_error)?;
+
+    let mut adjustments = Vec::new();
+    for row in rows {
+        let (task_id, ts, payload) = row.map_err(to_error)?;
+        if ts > window_end || window_start.is_some_and(|start| ts < start) {
+            continue;
+        }
+        let delta_seconds = parse_adjustment_delta(payload.as_deref());
+        if delta_seconds == 0 {
+            continue;
+        }
+        adjustments.push(FocusAdjustment {
+            task_id,
+            ts,
+            delta_seconds,
+        });
+    }
+
+    Ok(adjustments)
 }
 
 fn push_interval(
@@ -1565,10 +1657,10 @@ fn completed_session_durations(
 ) -> AppResult<Vec<i64>> {
     let mut stmt = conn
         .prepare(
-            "SELECT event_type, ts
+            "SELECT event_type, ts, payload
              FROM time_events
              WHERE task_id = ?1
-               AND event_type IN ('start', 'resume', 'pause', 'stop')
+               AND event_type IN ('start', 'resume', 'pause', 'stop', 'adjust')
                AND ts <= ?2
              ORDER BY ts ASC, id ASC",
         )
@@ -1576,26 +1668,44 @@ fn completed_session_durations(
 
     let rows = stmt
         .query_map(params![task_id, until_ts], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })
         .map_err(to_error)?;
 
     let mut running_since: Option<i64> = None;
     let mut sessions = Vec::new();
+    let mut pending_adjustment = 0i64;
 
     for row in rows {
-        let (event_type, ts) = row.map_err(to_error)?;
+        let (event_type, ts, payload) = row.map_err(to_error)?;
         match event_type.as_str() {
             EVENT_START | EVENT_RESUME => {
                 if running_since.is_none() {
                     running_since = Some(ts);
+                    pending_adjustment = 0;
                 }
             }
             EVENT_PAUSE | EVENT_STOP => {
                 if let Some(start) = running_since.take() {
-                    if ts > start {
-                        sessions.push(ts - start);
-                    }
+                    sessions.push((ts - start + pending_adjustment).max(0));
+                    pending_adjustment = 0;
+                }
+            }
+            EVENT_ADJUST => {
+                let delta_seconds = parse_adjustment_delta(payload.as_deref());
+                if delta_seconds == 0 {
+                    continue;
+                }
+                if running_since.is_some() {
+                    pending_adjustment += delta_seconds;
+                } else if let Some(last_session) = sessions.last_mut() {
+                    *last_session = (*last_session + delta_seconds).max(0);
+                } else if delta_seconds > 0 {
+                    sessions.push(delta_seconds);
                 }
             }
             _ => {}
@@ -1603,6 +1713,73 @@ fn completed_session_durations(
     }
 
     Ok(sessions)
+}
+
+fn task_total_focus_seconds(conn: &Connection, task_id: &str, until_ts: i64) -> AppResult<i64> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT event_type, ts, payload
+             FROM time_events
+             WHERE task_id = ?1
+               AND event_type IN ('start', 'resume', 'pause', 'stop', 'adjust')
+               AND ts <= ?2
+             ORDER BY ts ASC, id ASC",
+        )
+        .map_err(to_error)?;
+
+    let rows = stmt
+        .query_map(params![task_id, until_ts], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(to_error)?;
+
+    let mut running_since: Option<i64> = None;
+    let mut pending_adjustment = 0i64;
+    let mut total_focus_seconds = 0i64;
+
+    for row in rows {
+        let (event_type, ts, payload) = row.map_err(to_error)?;
+        match event_type.as_str() {
+            EVENT_START | EVENT_RESUME => {
+                if running_since.is_none() {
+                    running_since = Some(ts);
+                    pending_adjustment = 0;
+                }
+            }
+            EVENT_PAUSE | EVENT_STOP => {
+                if let Some(start) = running_since.take() {
+                    total_focus_seconds += (ts - start + pending_adjustment).max(0);
+                    pending_adjustment = 0;
+                }
+            }
+            EVENT_ADJUST => {
+                let delta_seconds = parse_adjustment_delta(payload.as_deref());
+                if running_since.is_some() {
+                    pending_adjustment += delta_seconds;
+                } else {
+                    total_focus_seconds = (total_focus_seconds + delta_seconds).max(0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(start) = running_since {
+        total_focus_seconds += (until_ts - start + pending_adjustment).max(0);
+    }
+
+    Ok(total_focus_seconds.max(0))
+}
+
+fn parse_adjustment_delta(payload: Option<&str>) -> i64 {
+    payload
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("delta_seconds").and_then(|raw| raw.as_i64()))
+        .unwrap_or(0)
 }
 
 fn count_task_switches(conn: &Connection, window_start: i64, window_end: i64) -> AppResult<i64> {
@@ -1905,4 +2082,6 @@ fn not_found_error(message: impl Into<String>) -> AppError {
 fn to_error(error: impl std::fmt::Display) -> AppError {
     AppError::internal("database operation failed", error.to_string())
 }
+
+
 

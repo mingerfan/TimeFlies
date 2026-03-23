@@ -160,6 +160,11 @@ export async function stopTask(taskId: string): Promise<void> {
   notifyDataChanged();
 }
 
+export async function adjustTaskFocus(taskId: string, deltaSeconds: number): Promise<void> {
+  await invoke("adjust_task_focus", { taskId, deltaSeconds });
+  notifyDataChanged();
+}
+
 export async function insertSubtaskAndStart(parentTaskId: string, title: string): Promise<string> {
   const childTaskId = await invoke<string>("insert_subtask_and_start", { parentTaskId, title });
   notifyDataChanged();
@@ -180,3 +185,4 @@ export async function respondRestSuggestion(suggestionId: number, accept: boolea
   await invoke("respond_rest_suggestion", { suggestionId, accept });
   notifyDataChanged();
 }
+

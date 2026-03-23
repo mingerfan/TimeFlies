@@ -64,6 +64,19 @@ handler = "stop_selected"
 requires_selected_task = true
 
 [[commands]]
+name = "adjust"
+description = "修正当前选中任务的累计专注时长"
+handler = "adjust_focus_selected"
+requires_selected_task = true
+insert_trailing_space = true
+
+[commands.argument]
+name = "delta"
+kind = "text"
+required = true
+placeholder = "如 -15m / +10m"
+
+[[commands]]
 name = "sub"
 description = "在当前选中任务下创建并开始一个子任务"
 handler = "create_or_insert_subtask"
@@ -75,3 +88,4 @@ name = "title"
 kind = "text"
 required = true
 placeholder = "子任务标题"
+

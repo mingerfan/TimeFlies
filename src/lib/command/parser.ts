@@ -6,6 +6,7 @@ export const COMMAND_NAMES = [
   "pause",
   "resume",
   "stop",
+  "adjust",
   "sub",
 ] as const;
 
@@ -174,3 +175,4 @@ function parseTags(input: string): TagParseResult {
     invalidTags,
   };
 }
+

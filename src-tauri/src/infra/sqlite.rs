@@ -163,7 +163,7 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL REFERENCES tasks(id),
                 event_type TEXT NOT NULL CHECK(
-                    event_type IN ('start', 'pause', 'resume', 'stop', 'reparent', 'tag_add', 'tag_remove')
+                    event_type IN ('start', 'pause', 'resume', 'stop', 'adjust', 'reparent', 'tag_add', 'tag_remove')
                 ),
                 ts INTEGER NOT NULL,
                 payload TEXT
@@ -280,5 +280,47 @@ fn run_migrations(connection: &Connection) -> AppResult<()> {
             })?;
     }
 
+    if current_version < 4 {
+        connection
+            .execute_batch(
+                "
+                BEGIN;
+
+                ALTER TABLE time_events RENAME TO time_events_v3;
+
+                CREATE TABLE time_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    event_type TEXT NOT NULL CHECK(
+                        event_type IN ('start', 'pause', 'resume', 'stop', 'adjust', 'reparent', 'tag_add', 'tag_remove')
+                    ),
+                    ts INTEGER NOT NULL,
+                    payload TEXT
+                );
+
+                INSERT INTO time_events (id, task_id, event_type, ts, payload)
+                SELECT id, task_id, event_type, ts, payload
+                FROM time_events_v3;
+
+                DROP TABLE time_events_v3;
+
+                CREATE INDEX IF NOT EXISTS idx_time_events_task_ts ON time_events(task_id, ts, id);
+                CREATE INDEX IF NOT EXISTS idx_time_events_ts ON time_events(ts, id);
+
+                PRAGMA user_version = 4;
+
+                COMMIT;
+                "
+            )
+            .map_err(|error| {
+                AppError::internal(
+                    "failed to apply sqlite migration v4",
+                    format!("failed to apply sqlite migration v4: {error}"),
+                )
+            })?;
+    }
+
     Ok(())
 }
+
+

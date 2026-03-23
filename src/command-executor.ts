@@ -1,4 +1,5 @@
 import type { TaskRecord } from "$lib/api";
+import { formatFocusAdjustmentDelta, parseFocusAdjustmentInput } from "$lib/focus-adjustment";
 
 import { listPrimaryCommandNames } from "./command-catalog";
 import type { CommandCatalog, CommandDefinition } from "./command-types";
@@ -22,6 +23,7 @@ export type CommandRunApi = {
   pauseTask: (taskId: string) => Promise<boolean>;
   resumeTask: (taskId: string) => Promise<boolean>;
   stopTask: (taskId: string) => Promise<boolean>;
+  adjustTaskFocus: (taskId: string, deltaSeconds: number) => Promise<boolean>;
   insertSubtaskAndStart: (parentTaskId: string, title: string) => Promise<string | null>;
   addTagToTask: (taskId: string, tagName: string) => Promise<boolean>;
 };
@@ -128,6 +130,8 @@ async function executeCommandAction(
       return executeResumeSelected(context, command, argument);
     case "stop_selected":
       return executeStopSelected(context, command, argument);
+    case "adjust_focus_selected":
+      return executeAdjustFocusSelected(context, command, argument);
     case "create_or_insert_subtask":
       return executeCreateOrInsertSubtask(context, command, argument);
   }
@@ -275,6 +279,26 @@ async function executeStopSelected(
   return ok
     ? succeedMain(`已停止任务「${selectedTask.title}」`, selectedTask.id)
     : failMain("停止任务失败", context.getLastRunErrorDetail());
+}
+
+async function executeAdjustFocusSelected(
+  context: CommandExecutionContext,
+  command: CommandDefinition,
+  argument: string
+): Promise<MainExecutionResult> {
+  const selectedTask = context.selectedTask;
+  if (!selectedTask) return failMain("请先选择一个任务");
+
+  const parsed = parseFocusAdjustmentInput(argument, command.name);
+  if (!parsed.ok) return failMain(parsed.message);
+
+  const ok = await context.run.adjustTaskFocus(selectedTask.id, parsed.deltaSeconds);
+  return ok
+    ? succeedMain(
+        `已调整任务「${selectedTask.title}」的专注时间（${formatFocusAdjustmentDelta(parsed.deltaSeconds)}）`,
+        selectedTask.id
+      )
+    : failMain("调整专注时间失败", context.getLastRunErrorDetail());
 }
 
 async function executeCreateOrInsertSubtask(
@@ -496,3 +520,4 @@ function success(message: string, clearInput: boolean): CommandExecutionResult {
     clearInput,
   };
 }
+

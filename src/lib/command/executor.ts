@@ -1,4 +1,5 @@
 import type { TaskRecord } from "$lib/api";
+import { formatFocusAdjustmentDelta, parseFocusAdjustmentInput } from "$lib/focus-adjustment";
 import { COMMAND_NAMES, type ParsedCommandInput } from "./parser";
 
 export type CommandFeedbackTone = "success" | "error" | "warning";
@@ -19,6 +20,7 @@ export type CommandRunApi = {
   pauseTask: (taskId: string) => Promise<boolean>;
   resumeTask: (taskId: string) => Promise<boolean>;
   stopTask: (taskId: string) => Promise<boolean>;
+  adjustTaskFocus: (taskId: string, deltaSeconds: number) => Promise<boolean>;
   insertSubtaskAndStart: (parentTaskId: string, title: string) => Promise<string | null>;
   addTagToTask: (taskId: string, tagName: string) => Promise<boolean>;
 };
@@ -195,6 +197,18 @@ async function executeCommandAction(
     return ok
       ? succeedMain(`已停止任务「${selectedTask.title}」`, selectedTask.id)
       : failMain("停止任务失败", context.getLastRunErrorDetail());
+  }
+
+  if (commandName === "adjust") {
+    const parsed = parseFocusAdjustmentInput(argument, commandName);
+    if (!parsed.ok) return failMain(parsed.message);
+    const ok = await context.run.adjustTaskFocus(selectedTask.id, parsed.deltaSeconds);
+    return ok
+      ? succeedMain(
+          `已调整任务「${selectedTask.title}」的专注时间（${formatFocusAdjustmentDelta(parsed.deltaSeconds)}）`,
+          selectedTask.id
+        )
+      : failMain("调整专注时间失败", context.getLastRunErrorDetail());
   }
 
   const subtaskTitle = argument.trim();
@@ -375,3 +389,4 @@ function success(message: string, clearInput: boolean): CommandExecutionResult {
     clearInput,
   };
 }
+

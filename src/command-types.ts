@@ -48,6 +48,7 @@ export const KNOWN_COMMAND_HANDLERS = [
   "resume_selected",
   "stop_selected",
   "create_or_insert_subtask",
+  "adjust_focus_selected",
 ] as const;
 
 export type CommandHandler = (typeof KNOWN_COMMAND_HANDLERS)[number];

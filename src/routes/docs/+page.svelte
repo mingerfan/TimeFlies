@@ -30,6 +30,10 @@
         <p class="guide-desc">控制当前任务状态机。</p>
       </article>
       <article class="guide-card">
+        <p class="guide-cmd">/adjust -15m</p>
+        <p class="guide-desc">修正当前任务累计专注时长，适合忘按暂停后的回补或扣减。</p>
+      </article>
+      <article class="guide-card">
         <p class="guide-cmd">/sub 子任务标题</p>
         <p class="guide-desc">在当前任务下创建子任务；运行中会插入并开始，未运行会创建并开始。</p>
       </article>
@@ -45,6 +49,7 @@
     <ul class="notes">
       <li>任务详情页顶部主工作台可一键切换操控目标到当前活动任务。</li>
       <li>若已有运行中任务，执行 /start 或 /resume 会先自动暂停原任务。</li>
+      <li>/adjust 仅支持 h/m/s，例如 /adjust -15m、/adjust +1h30m。</li>
       <li>命令执行失败不影响输入框，可直接修正命令后再次回车。</li>
     </ul>
   </section>
@@ -188,3 +193,4 @@
     }
   }
 </style>
+

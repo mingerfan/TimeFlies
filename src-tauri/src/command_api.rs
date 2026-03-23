@@ -110,6 +110,16 @@ pub fn stop_task(state: State<'_, AppState>, task_id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn adjust_task_focus(
+    state: State<'_, AppState>,
+    task_id: String,
+    delta_seconds: i64,
+) -> AppResult<()> {
+    let mut conn = lock_db(&state)?;
+    app::adjust_task_focus(&mut conn, task_id, delta_seconds)
+}
+
+#[tauri::command]
 pub fn insert_subtask_and_start(
     state: State<'_, AppState>,
     parent_task_id: String,
@@ -148,3 +158,4 @@ pub fn respond_rest_suggestion(
     let mut conn = lock_db(&state)?;
     app::respond_rest_suggestion(&mut conn, suggestion_id, accept)
 }
+

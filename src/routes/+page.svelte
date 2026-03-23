@@ -170,7 +170,7 @@
   const commandContextHints = $derived.by(() => {
     if (!selectedTask) {
       return [
-        "先在右侧 Mini 任务树选择目标任务，再执行 /rename、/parent、/sub。",
+        "先在右侧 Mini 任务树选择目标任务，再执行 /rename、/parent、/adjust、/sub。",
         "需要直接新建并开始根任务时，使用 /new <title>。",
         "直接输入纯文本时：有选中任务则创建并开始其子任务；未选中时仅创建根任务。",
         "输入 #tag 会在主动作成功后附加标签，不会阻断主命令执行。",
@@ -186,6 +186,7 @@
     } else {
       hints.push("可用 /start 开始当前任务。");
     }
+    hints.push("忘按暂停时可用 /adjust -15m 这类命令修正累计专注时长。");
 
     if (activeTask && activeTask.id !== selectedTask.id) {
       hints.push(`当前运行中的任务是「${activeTask.title}」，执行 /start 时会自动先暂停它。`);
@@ -1377,6 +1378,8 @@
     }
   }
 </style>
+
+
 
 
 

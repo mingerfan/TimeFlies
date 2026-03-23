@@ -425,7 +425,13 @@
   }
 
   function commandInsertText(name: (typeof COMMAND_NAMES)[number]): string {
-    if (name === "new" || name === "rename" || name === "parent" || name === "sub") {
+    if (
+      name === "new" ||
+      name === "rename" ||
+      name === "parent" ||
+      name === "adjust" ||
+      name === "sub"
+    ) {
       return `${name} `;
     }
     return name;
@@ -447,7 +453,7 @@
         onkeyup={onInputKeyup}
         onclick={onInputClick}
         onkeydown={onInputKeydown}
-        placeholder="输入命令（/new /rename /parent /start /pause /resume /stop /sub）或直接输入任务标题"
+        placeholder="输入命令（/new /rename /parent /start /pause /resume /stop /adjust /sub）或直接输入任务标题"
         autocomplete="off"
         spellcheck="false"
         disabled={busy}
@@ -638,4 +644,5 @@
     color: #7f1a1a;
   }
 </style>
+
 
