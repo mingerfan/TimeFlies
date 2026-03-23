@@ -252,6 +252,12 @@
     }
   });
 
+
+  $effect(() => {
+    if (!$restSession.active) return;
+    if (activeTask?.status !== "running") return;
+    stopRest();
+  });
   async function refresh(options: { background?: boolean } = {}) {
     const { background = false } = options;
     if (refreshInFlight) return;
