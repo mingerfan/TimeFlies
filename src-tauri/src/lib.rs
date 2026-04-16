@@ -8,7 +8,7 @@ mod infra;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             command_catalog::load_builtin_command_catalog().map_err(|error| {
                 std::io::Error::other(format!("failed to load command catalog: {error}"))
@@ -40,7 +40,26 @@ pub fn run() {
             command_api::remove_tag_from_task,
             command_api::respond_rest_suggestion
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
 
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let pause_result = {
+                let state = app_handle.state::<infra::AppState>();
+                let mut conn = match state.db.lock() {
+                    Ok(conn) => conn,
+                    Err(_) => {
+                        eprintln!("failed to pause running task on exit: poisoned db mutex");
+                        return;
+                    }
+                };
+                app::pause_running_task(&mut conn)
+            };
+
+            if let Err(error) = pause_result {
+                eprintln!("failed to pause running task on exit: {error}");
+            }
+        }
+    });
+}

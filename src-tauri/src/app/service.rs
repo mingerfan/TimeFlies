@@ -265,6 +265,13 @@ pub fn pause_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     Ok(())
 }
 
+pub fn pause_running_task(conn: &mut Connection) -> AppResult<Option<String>> {
+    let Some(task_id) = find_running_task(conn)? else {
+        return Ok(None);
+    };
+    pause_task(conn, task_id.clone())?;
+    Ok(Some(task_id))
+}
 pub fn resume_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     let previous_focus_task = latest_focus_task(conn)?;
     let task = get_task_state(conn, &task_id)?;
