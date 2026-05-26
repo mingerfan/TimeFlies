@@ -14,7 +14,7 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
-  import { notifyError } from "$lib/notifications";
+  import { notifyError, pushNotification } from "$lib/notifications";
   import {
     buildSubtreeRecentActivityMap,
     buildTaskChain,
@@ -36,6 +36,11 @@
 
   type DeleteMode = "archive" | "hard";
   type TreeCompletionFilter = "open" | "all" | "done";
+  type TaskContextMenu = {
+    taskId: string;
+    x: number;
+    y: number;
+  };
 
   let overview = $state<OverviewResponse | null>(null);
   let range = $state<OverviewRange>("week");
@@ -52,6 +57,7 @@
   let batchMode = $state(false);
   let batchDeleteMode = $state<DeleteMode>("archive");
   let batchSelectedTaskIds = $state<Set<string>>(new Set());
+  let taskContextMenu = $state<TaskContextMenu | null>(null);
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -160,6 +166,17 @@
   const selectedTaskIsVisible = $derived.by(() =>
     selectedTaskId ? displayRows.some((row) => row.task.id === selectedTaskId) : true
   );
+  const contextMenuTask = $derived.by(() =>
+    taskContextMenu ? (taskMap.get(taskContextMenu.taskId) ?? null) : null
+  );
+  const contextMenuRow = $derived.by(() =>
+    taskContextMenu
+      ? (displayRows.find((row) => row.task.id === taskContextMenu?.taskId) ?? null)
+      : null
+  );
+  const contextSubtreeFullySelected = $derived.by(() =>
+    contextMenuTask ? isSubtreeFullySelected(contextMenuTask.id) : false
+  );
 
   const batchSelectedCount = $derived.by(() => batchSelectedTaskIds.size);
 
@@ -183,12 +200,22 @@
       if (loading || !!currentAction) return;
       void refresh();
     };
+    const onDocumentClick = () => closeTaskContextMenu();
+    const onDocumentKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeTaskContextMenu();
+    };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    window.addEventListener("click", onDocumentClick);
+    window.addEventListener("keydown", onDocumentKeydown);
+    window.addEventListener("resize", closeTaskContextMenu);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
     return () => {
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+      window.removeEventListener("click", onDocumentClick);
+      window.removeEventListener("keydown", onDocumentKeydown);
+      window.removeEventListener("resize", closeTaskContextMenu);
       window.clearInterval(ticker);
     };
   });
@@ -300,6 +327,36 @@
     return next;
   }
 
+  function openTaskContextMenu(event: MouseEvent, row: VisibleTaskRow) {
+    event.preventDefault();
+    event.stopPropagation();
+    selectedTaskId = row.task.id;
+    const menuWidth = 230;
+    const menuHeight = 360;
+    const margin = 8;
+    taskContextMenu = {
+      taskId: row.task.id,
+      x: Math.max(margin, Math.min(event.clientX, window.innerWidth - menuWidth - margin)),
+      y: Math.max(margin, Math.min(event.clientY, window.innerHeight - menuHeight - margin)),
+    };
+  }
+
+  function closeTaskContextMenu() {
+    taskContextMenu = null;
+  }
+
+  function onTreeContextMenu(event: MouseEvent) {
+    if (shouldUseNativeContextMenu(event.target)) return;
+    if ((event.target as Element | null)?.closest(".tree-row, .task-context-menu")) return;
+    event.preventDefault();
+    closeTaskContextMenu();
+  }
+
+  function shouldUseNativeContextMenu(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest('input, textarea, select, [contenteditable="true"]');
+  }
+
   async function ensureSwitchFromActive(targetTaskId: string): Promise<boolean> {
     const active = activeTaskId ? taskMap.get(activeTaskId) ?? null : null;
     if (!active || active.id === targetTaskId || active.status !== "running") {
@@ -309,8 +366,7 @@
     return paused !== null;
   }
 
-  async function onTaskQuickToggle(event: MouseEvent, task: TaskRecord) {
-    event.stopPropagation();
+  async function toggleTaskRunState(task: TaskRecord) {
     selectedTaskId = task.id;
     if (task.status === "running") {
       await runAction("暂停任务", () => pauseTask(task.id));
@@ -324,31 +380,24 @@
     await runAction("开始任务", () => startTask(task.id));
   }
 
+  async function onTaskQuickToggle(event: MouseEvent, task: TaskRecord) {
+    event.stopPropagation();
+    await toggleTaskRunState(task);
+  }
+
   async function onPrimarySelectedToggle() {
     if (!selectedTask) return;
-    if (selectedTask.status === "running") {
-      await runAction("暂停任务", () => pauseTask(selectedTask.id));
-      return;
-    }
-    if (!(await ensureSwitchFromActive(selectedTask.id))) return;
-    if (selectedTask.status === "paused") {
-      await runAction("恢复任务", () => resumeTask(selectedTask.id));
-      return;
-    }
-    await runAction("开始任务", () => startTask(selectedTask.id));
+    await toggleTaskRunState(selectedTask);
   }
 
   async function onStopSelected() {
     if (!selectedTask) return;
-    if (selectedTask.status !== "running" && selectedTask.status !== "paused") return;
-    await runAction("停止任务", () => stopTask(selectedTask.id));
+    await stopTaskAction(selectedTask);
   }
 
   async function onCompleteSelected() {
     if (!selectedTask || selectedTask.status === "stopped") return;
-    await runAction(selectedTask.parent_id ? "完成任务分支" : "完成待办", () =>
-      completeTaskTree(selectedTask.id)
-    );
+    await completeTaskAction(selectedTask);
   }
 
   async function onArchiveSelected() {
@@ -361,17 +410,36 @@
 
   async function onDeleteSelected(hardDelete: boolean) {
     if (!selectedTask) return;
+    await deleteTaskAction(selectedTask, hardDelete);
+  }
+
+  async function stopTaskAction(task: TaskRecord) {
+    if (task.status !== "running" && task.status !== "paused") return;
+    selectedTaskId = task.id;
+    await runAction("停止任务", () => stopTask(task.id));
+  }
+
+  async function completeTaskAction(task: TaskRecord) {
+    if (task.status === "stopped") return;
+    selectedTaskId = task.id;
+    await runAction(task.parent_id ? "完成任务分支" : "完成待办", () =>
+      completeTaskTree(task.id)
+    );
+  }
+
+  async function deleteTaskAction(task: TaskRecord, hardDelete: boolean) {
+    selectedTaskId = task.id;
     const modeLabel = hardDelete ? "硬删除" : "软删除（归档）";
     const warning = hardDelete
       ? "该操作不可恢复，将彻底移除任务、其子任务及相关事件记录。"
       : "该操作会归档任务子树，可视为软删除。";
     const confirmed = window.confirm(
-      `确认${modeLabel}任务「${selectedTask.title}」及其全部子任务吗？\n${warning}`
+      `确认${modeLabel}任务「${task.title}」及其全部子任务吗？\n${warning}`
     );
     if (!confirmed) return;
-    if (!(await ensureDeleteReady([selectedTask.id], hardDelete))) return;
+    if (!(await ensureDeleteReady([task.id], hardDelete))) return;
     await runAction(hardDelete ? "硬删除任务" : "删除任务", () =>
-      deleteTasks([selectedTask.id], hardDelete)
+      deleteTasks([task.id], hardDelete)
     );
   }
 
@@ -552,6 +620,106 @@
     return "▶";
   }
 
+  async function onContextPrimaryAction() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeTaskContextMenu();
+    await toggleTaskRunState(task);
+  }
+
+  async function onContextStopTask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeTaskContextMenu();
+    await stopTaskAction(task);
+  }
+
+  async function onContextCompleteTask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeTaskContextMenu();
+    await completeTaskAction(task);
+  }
+
+  async function onContextCreateSubtask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeTaskContextMenu();
+    const title = window.prompt(`给「${task.title}」新增子任务`);
+    const trimmedTitle = title?.trim();
+    if (!trimmedTitle) return;
+
+    const childId = await runAction("创建子任务", () => createTask(trimmedTitle, task.id));
+    if (!childId) return;
+    selectedTaskId = childId;
+    const next = new Set(expandedTaskIds);
+    next.add(task.id);
+    expandedTaskIds = next;
+  }
+
+  function onContextToggleExpand() {
+    const task = contextMenuTask;
+    if (!task) return;
+    toggleExpand(task.id);
+    closeTaskContextMenu();
+  }
+
+  async function onContextCopyPath() {
+    const task = contextMenuTask;
+    if (!task) return;
+    const path = buildTaskChain(task.id, taskMap)
+      .map((item) => item.title)
+      .join(" / ");
+    closeTaskContextMenu();
+    try {
+      await navigator.clipboard.writeText(path);
+      pushNotification({
+        kind: "system",
+        level: "success",
+        title: "已复制任务路径",
+        message: path,
+        dedupeKey: "tree-copy-task-path",
+      });
+    } catch (error) {
+      notifyError("复制任务路径失败", error, "tree-copy-path-error");
+    }
+  }
+
+  function onContextOpenDetail() {
+    const task = contextMenuTask;
+    if (!task) return;
+    selectedTaskId = task.id;
+    closeTaskContextMenu();
+    window.location.href = "/";
+  }
+
+  function onContextToggleBatchSubtree() {
+    const task = contextMenuTask;
+    if (!task) return;
+    const next = new Set(batchSelectedTaskIds);
+    if (batchMode && isSubtreeFullySelected(task.id)) {
+      removeSubtreeSelections(task.id, next);
+      removeAncestorSelections(task.id, next, taskMap);
+    } else {
+      addSubtreeSelections(task.id, next);
+      batchMode = true;
+    }
+    batchSelectedTaskIds = next;
+    closeTaskContextMenu();
+  }
+
+  async function onContextDeleteTask(hardDelete: boolean) {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeTaskContextMenu();
+    await deleteTaskAction(task, hardDelete);
+  }
+
+  function contextBatchActionLabel(): string {
+    if (!batchMode) return "批量选择子树";
+    return contextSubtreeFullySelected ? "取消选择子树" : "选择子树";
+  }
+
   function resetTreeQuery() {
     treeQuery = "";
   }
@@ -680,6 +848,16 @@
     }
   }
 
+  function isSubtreeFullySelected(taskId: string): boolean {
+    const descendants = new Set<string>();
+    collectSubtreeTaskIds(taskId, childrenByParent, descendants);
+    if (descendants.size === 0) return false;
+    for (const id of descendants) {
+      if (!batchSelectedTaskIds.has(id)) return false;
+    }
+    return true;
+  }
+
   function collectSubtreeIdsForRoots(rootIds: string[]): Set<string> {
     const collector = new Set<string>();
     for (const rootId of rootIds) {
@@ -795,7 +973,7 @@
   }
 </script>
 
-<main class="tree-screen">
+<main class="tree-screen" oncontextmenu={onTreeContextMenu}>
   <header class="page-head">
     <div>
       <p class="eyebrow">任务树工作区</p>
@@ -983,12 +1161,15 @@
     {:else if displayRows.length === 0}
       <p class="empty">{emptyTreeMessage()}</p>
     {:else}
-      <div class="tree-frame scroll-hint">
+      <div class="tree-frame scroll-hint" onscroll={closeTaskContextMenu}>
         <ul class="tree-list" role="tree" aria-label="任务树">
           {#each displayRows as row (row.task.id)}
             <li class="tree-item">
               <div
                 class="tree-row"
+                role="treeitem"
+                tabindex="-1"
+                aria-selected={selectedTaskId === row.task.id}
                 class:batch-mode={batchMode}
                 class:selected={selectedTaskId === row.task.id}
                 class:active-ancestor={activePathIds.has(row.task.id) && activeTaskId !== row.task.id}
@@ -996,6 +1177,8 @@
                 class:completed={row.task.status === "stopped"}
                 class:match={row.isMatch}
                 class:path-only={row.isPathOnly}
+                class:context-open={taskContextMenu?.taskId === row.task.id}
+                oncontextmenu={(event) => openTaskContextMenu(event, row)}
                 style={`--depth:${row.depth}`}
               >
                 {#if batchMode}
@@ -1071,6 +1254,79 @@
       </div>
     {/if}
   </section>
+
+  {#if taskContextMenu && contextMenuTask}
+    <div
+      class="task-context-menu"
+      role="menu"
+      tabindex="-1"
+      aria-label={`任务操作：${contextMenuTask.title}`}
+      style={`left:${taskContextMenu.x}px;top:${taskContextMenu.y}px`}
+      oncontextmenu={(event) => event.preventDefault()}
+    >
+      <div class="context-menu-head">
+        <span class="context-menu-title" title={contextMenuTask.title}>{contextMenuTask.title}</span>
+        <span>{statusLabel(contextMenuTask.status)}</span>
+      </div>
+      <button type="button" role="menuitem" onclick={() => void onContextPrimaryAction()} disabled={!!currentAction}>
+        {primaryActionLabel(contextMenuTask)}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => void onContextStopTask()}
+        disabled={!!currentAction || (contextMenuTask.status !== "running" && contextMenuTask.status !== "paused")}
+      >
+        停止
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => void onContextCompleteTask()}
+        disabled={!!currentAction || contextMenuTask.status === "stopped"}
+      >
+        {contextMenuTask.parent_id ? "完成分支" : "完成待办"}
+      </button>
+      <div class="context-separator"></div>
+      <button type="button" role="menuitem" onclick={() => void onContextCreateSubtask()} disabled={!!currentAction}>
+        新增子任务
+      </button>
+      {#if contextMenuRow?.hasChildren}
+        <button type="button" role="menuitem" onclick={onContextToggleExpand}>
+          {expandedTaskIds.has(contextMenuTask.id) ? "收起子任务" : "展开子任务"}
+        </button>
+      {/if}
+      <button type="button" role="menuitem" onclick={onContextToggleBatchSubtree} disabled={!!currentAction}>
+        {contextBatchActionLabel()}
+      </button>
+      <div class="context-separator"></div>
+      <button type="button" role="menuitem" onclick={() => void onContextCopyPath()}>
+        复制路径
+      </button>
+      <button type="button" role="menuitem" onclick={onContextOpenDetail}>
+        打开详情页
+      </button>
+      <div class="context-separator"></div>
+      <button
+        type="button"
+        role="menuitem"
+        class="context-danger"
+        onclick={() => void onContextDeleteTask(false)}
+        disabled={!!currentAction}
+      >
+        删除（归档）
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        class="context-danger strong"
+        onclick={() => void onContextDeleteTask(true)}
+        disabled={!!currentAction}
+      >
+        删除（硬）
+      </button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -1247,6 +1503,80 @@
   .more-actions-menu button.active {
     background: #8b2a2a;
     color: #fff;
+  }
+
+  .task-context-menu {
+    position: fixed;
+    z-index: 30;
+    width: 230px;
+    border: 1px solid #cfd8e6;
+    border-radius: 0.62rem;
+    background: #ffffff;
+    box-shadow: 0 18px 42px rgba(17, 36, 63, 0.2);
+    padding: 0.36rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+  }
+
+  .context-menu-head {
+    display: grid;
+    gap: 0.08rem;
+    padding: 0.24rem 0.38rem 0.34rem;
+    color: #64748b;
+    font-size: 0.72rem;
+    border-bottom: 1px solid #edf1f6;
+    margin-bottom: 0.12rem;
+  }
+
+  .context-menu-title {
+    min-width: 0;
+    color: #172b46;
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .task-context-menu button {
+    width: 100%;
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    border-radius: 0.42rem;
+    background: transparent;
+    color: #26364a;
+    padding: 0.42rem 0.48rem;
+    text-align: left;
+    font-size: 0.82rem;
+  }
+
+  .task-context-menu button:hover:not(:disabled),
+  .task-context-menu button:focus-visible {
+    background: #eef4ff;
+    color: #1f4f92;
+    outline: none;
+  }
+
+  .task-context-menu button.context-danger {
+    color: #8a2a2a;
+  }
+
+  .task-context-menu button.context-danger:hover:not(:disabled),
+  .task-context-menu button.context-danger:focus-visible {
+    background: #fff0f0;
+    color: #7f1f1f;
+  }
+
+  .task-context-menu button.context-danger.strong {
+    font-weight: 700;
+  }
+
+  .context-separator {
+    height: 1px;
+    background: #edf1f6;
+    margin: 0.14rem 0;
   }
 
   .tree-panel {
@@ -1533,6 +1863,11 @@
 
   .tree-row.selected .row-main {
     background: #e5e7eb;
+    color: #111827;
+  }
+
+  .tree-row.context-open .row-main {
+    background: #dfeaff;
     color: #111827;
   }
 

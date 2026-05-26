@@ -1,6 +1,9 @@
 <script lang="ts">
   import {
     APP_DATA_CHANGED_EVENT,
+    completeTaskTree,
+    createTask,
+    deleteTasks,
     getOverview,
     pauseTask,
     resumeTask,
@@ -35,6 +38,11 @@
     depth: number;
     hasChildren: boolean;
   };
+  type DetailContextMenu = {
+    taskId: string;
+    x: number;
+    y: number;
+  };
 
   let overview = $state<OverviewResponse | null>(null);
   let dayOverview = $state<OverviewResponse | null>(null);
@@ -49,6 +57,7 @@
 
   let commandInput = $state("");
   let lastCommandRunErrorDetail = $state<string | null>(null);
+  let detailContextMenu = $state<DetailContextMenu | null>(null);
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -153,6 +162,14 @@
     const task = heroControlTask;
     return !!task && (task.status === "running" || task.status === "paused");
   });
+  const contextMenuTask = $derived.by(() =>
+    detailContextMenu ? (taskMap.get(detailContextMenu.taskId) ?? null) : null
+  );
+  const contextMenuMiniRow = $derived.by(() =>
+    detailContextMenu
+      ? (miniTreeRows.find((row) => row.task.id === detailContextMenu?.taskId) ?? null)
+      : null
+  );
 
   const dayActiveLiveDelta = $derived.by(() => {
     const snapshot = dayOverview;
@@ -202,6 +219,13 @@
       void refresh({ background: true });
     };
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    const onDocumentClick = () => closeDetailContextMenu();
+    const onDocumentKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDetailContextMenu();
+    };
+    window.addEventListener("click", onDocumentClick);
+    window.addEventListener("keydown", onDocumentKeydown);
+    window.addEventListener("resize", closeDetailContextMenu);
     const ticker = window.setInterval(() => {
       nowTs = Math.floor(Date.now() / 1000);
     }, 1_000);
@@ -211,6 +235,9 @@
     }, 30_000);
     return () => {
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+      window.removeEventListener("click", onDocumentClick);
+      window.removeEventListener("keydown", onDocumentKeydown);
+      window.removeEventListener("resize", closeDetailContextMenu);
       window.clearInterval(ticker);
       window.clearInterval(poller);
     };
@@ -329,9 +356,38 @@
     return paused !== null;
   }
 
-  async function onPrimaryToggle() {
-    const task = heroControlTask;
-    if (!task) return;
+  function openDetailContextMenu(event: MouseEvent, task: TaskRecord) {
+    event.preventDefault();
+    event.stopPropagation();
+    selectedTaskId = task.id;
+    const menuWidth = 230;
+    const menuHeight = 340;
+    const margin = 8;
+    detailContextMenu = {
+      taskId: task.id,
+      x: Math.max(margin, Math.min(event.clientX, window.innerWidth - menuWidth - margin)),
+      y: Math.max(margin, Math.min(event.clientY, window.innerHeight - menuHeight - margin)),
+    };
+  }
+
+  function closeDetailContextMenu() {
+    detailContextMenu = null;
+  }
+
+  function onDetailContextMenu(event: MouseEvent) {
+    if (shouldUseNativeContextMenu(event.target)) return;
+    if ((event.target as Element | null)?.closest(".detail-task-context-menu")) return;
+    event.preventDefault();
+    closeDetailContextMenu();
+  }
+
+  function shouldUseNativeContextMenu(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest('input, textarea, select, [contenteditable="true"]');
+  }
+
+  async function toggleTaskRunState(task: TaskRecord) {
+    selectedTaskId = task.id;
     if (task.status === "running") {
       await runAction("暂停任务", () => pauseTask(task.id));
       return;
@@ -345,11 +401,45 @@
     await runAction("开始任务", () => startTask(task.id));
   }
 
+  async function onPrimaryToggle() {
+    const task = heroControlTask;
+    if (!task) return;
+    await toggleTaskRunState(task);
+  }
+
   async function onStopSelected() {
     const task = heroControlTask;
     if (!task) return;
+    await stopTaskAction(task);
+  }
+
+  async function stopTaskAction(task: TaskRecord) {
+    selectedTaskId = task.id;
     if (task.status !== "running" && task.status !== "paused") return;
     await runAction("停止任务", () => stopTask(task.id));
+  }
+
+  async function completeTaskAction(task: TaskRecord) {
+    selectedTaskId = task.id;
+    if (task.status === "stopped") return;
+    await runAction(task.parent_id ? "完成任务分支" : "完成待办", () =>
+      completeTaskTree(task.id)
+    );
+  }
+
+  async function deleteTaskAction(task: TaskRecord, hardDelete: boolean) {
+    selectedTaskId = task.id;
+    const modeLabel = hardDelete ? "硬删除" : "软删除（归档）";
+    const warning = hardDelete
+      ? "该操作不可恢复，将彻底移除任务、其子任务及相关事件记录。"
+      : "该操作会归档任务子树，可视为软删除。";
+    const confirmed = window.confirm(
+      `确认${modeLabel}任务「${task.title}」及其全部子任务吗？\n${warning}`
+    );
+    if (!confirmed) return;
+    await runAction(hardDelete ? "硬删除任务" : "删除任务", () =>
+      deleteTasks([task.id], hardDelete)
+    );
   }
 
   async function onToggleRest() {
@@ -408,20 +498,88 @@
 
   async function onMiniNodeToggle(event: MouseEvent, task: TaskRecord) {
     event.stopPropagation();
+    await toggleTaskRunState(task);
+  }
+
+  async function onContextPrimaryAction() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeDetailContextMenu();
+    await toggleTaskRunState(task);
+  }
+
+  async function onContextStopTask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeDetailContextMenu();
+    await stopTaskAction(task);
+  }
+
+  async function onContextCompleteTask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeDetailContextMenu();
+    await completeTaskAction(task);
+  }
+
+  async function onContextCreateSubtask() {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeDetailContextMenu();
+    const title = window.prompt(`给「${task.title}」新增子任务`);
+    const trimmedTitle = title?.trim();
+    if (!trimmedTitle) return;
+
+    const childId = await runAction("创建子任务", () => createTask(trimmedTitle, task.id));
+    if (!childId) return;
+    selectedTaskId = childId;
+    const next = new Set(expandedMiniTaskIds);
+    next.add(task.id);
+    expandedMiniTaskIds = next;
+  }
+
+  function onContextToggleMiniExpand() {
+    const task = contextMenuTask;
+    if (!task) return;
+    toggleMiniExpand(task.id);
+    closeDetailContextMenu();
+  }
+
+  async function onContextCopyPath() {
+    const task = contextMenuTask;
+    if (!task) return;
+    const path = buildTaskChain(task.id, taskMap)
+      .map((item) => item.title)
+      .join(" / ");
+    closeDetailContextMenu();
+    try {
+      await navigator.clipboard.writeText(path);
+      notifyCommandResult("已复制任务路径", "success", path);
+    } catch (error) {
+      notifyError("复制任务路径失败", error, "detail-copy-path-error");
+    }
+  }
+
+  function onContextFocusTask() {
+    const task = contextMenuTask;
+    if (!task) return;
     selectedTaskId = task.id;
+    closeDetailContextMenu();
+  }
 
-    if (task.status === "running") {
-      await runAction("暂停任务", () => pauseTask(task.id));
-      return;
-    }
+  function onContextOpenTree() {
+    const task = contextMenuTask;
+    if (!task) return;
+    selectedTaskId = task.id;
+    closeDetailContextMenu();
+    window.location.href = "/tree";
+  }
 
-    if (!(await ensureSwitchFromActive(task.id))) return;
-    if (task.status === "paused") {
-      await runAction("恢复任务", () => resumeTask(task.id));
-      return;
-    }
-
-    await runAction("开始任务", () => startTask(task.id));
+  async function onContextDeleteTask(hardDelete: boolean) {
+    const task = contextMenuTask;
+    if (!task) return;
+    closeDetailContextMenu();
+    await deleteTaskAction(task, hardDelete);
   }
 
   async function onCommandExecute(input: string) {
@@ -520,7 +678,7 @@
   }
 </script>
 
-<main class="detail-screen">
+<main class="detail-screen" oncontextmenu={onDetailContextMenu}>
   {#if !$restSession.active && activeTask}
     <header
       class="hero clickable"
@@ -529,6 +687,7 @@
       aria-label="聚焦当前活动任务作为操控目标"
       onclick={onFocusActiveTask}
       onkeydown={onHeroKeydown}
+      oncontextmenu={(event) => openDetailContextMenu(event, activeTask)}
     >
       <div class="hero-main">
         <p class="eyebrow">主工作台</p>
@@ -642,7 +801,12 @@
 
       <article class="panel detail-main">
         {#if selectedTask}
-          <section class="detail-top">
+          <section
+            class="detail-top"
+            role="group"
+            aria-label="选中任务详情"
+            oncontextmenu={(event) => openDetailContextMenu(event, selectedTask)}
+          >
             <p class="detail-title" title={selectedTask.title}>{selectedTask.title}</p>
             <p class="meta">
               创建于 {formatDate(selectedTask.created_at)} · Ex {formatSeconds(taskLiveExclusiveSeconds(selectedTask))} · In
@@ -712,15 +876,20 @@
         {:else if miniTreeRows.length === 0}
           <p class="empty">当前任务系暂无节点</p>
         {:else}
-          <div class="mini-tree-frame scroll-hint">
+          <div class="mini-tree-frame scroll-hint" onscroll={closeDetailContextMenu}>
             <ul class="mini-list" role="tree" aria-label="当前任务系任务树">
               {#each miniTreeRows as row (row.task.id)}
                 <li class="mini-item">
                   <div
                     class="mini-tree-row"
+                    role="treeitem"
+                    tabindex="-1"
+                    aria-selected={selectedTaskId === row.task.id}
                     class:selected={selectedTaskId === row.task.id}
                     class:active-ancestor={activePathIds.has(row.task.id) && activeTask?.id !== row.task.id}
                     class:active-leaf={activeTask?.id === row.task.id}
+                    class:context-open={detailContextMenu?.taskId === row.task.id}
+                    oncontextmenu={(event) => openDetailContextMenu(event, row.task)}
                     style={`--depth:${row.depth}`}
                   >
                     {#if row.hasChildren}
@@ -768,6 +937,77 @@
       </article>
     </aside>
   </section>
+
+  {#if detailContextMenu && contextMenuTask}
+    <div
+      class="detail-task-context-menu"
+      role="menu"
+      tabindex="-1"
+      aria-label={`任务操作：${contextMenuTask.title}`}
+      style={`left:${detailContextMenu.x}px;top:${detailContextMenu.y}px`}
+      oncontextmenu={(event) => event.preventDefault()}
+    >
+      <div class="context-menu-head">
+        <span class="context-menu-title" title={contextMenuTask.title}>{contextMenuTask.title}</span>
+        <span>{statusLabel(contextMenuTask.status)}</span>
+      </div>
+      <button type="button" role="menuitem" onclick={() => void onContextPrimaryAction()} disabled={!!currentAction}>
+        {contextMenuTask.status === "running"
+          ? "暂停"
+          : contextMenuTask.status === "paused"
+            ? "恢复"
+            : "开始"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => void onContextStopTask()}
+        disabled={!!currentAction || (contextMenuTask.status !== "running" && contextMenuTask.status !== "paused")}
+      >
+        停止
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => void onContextCompleteTask()}
+        disabled={!!currentAction || contextMenuTask.status === "stopped"}
+      >
+        {contextMenuTask.parent_id ? "完成分支" : "完成待办"}
+      </button>
+      <div class="context-separator"></div>
+      <button type="button" role="menuitem" onclick={onContextFocusTask}>设为操控目标</button>
+      <button type="button" role="menuitem" onclick={() => void onContextCreateSubtask()} disabled={!!currentAction}>
+        新增子任务
+      </button>
+      {#if contextMenuMiniRow?.hasChildren}
+        <button type="button" role="menuitem" onclick={onContextToggleMiniExpand}>
+          {expandedMiniTaskIds.has(contextMenuTask.id) ? "收起子任务" : "展开子任务"}
+        </button>
+      {/if}
+      <div class="context-separator"></div>
+      <button type="button" role="menuitem" onclick={() => void onContextCopyPath()}>复制路径</button>
+      <button type="button" role="menuitem" onclick={onContextOpenTree}>打开完整任务树</button>
+      <div class="context-separator"></div>
+      <button
+        type="button"
+        role="menuitem"
+        class="context-danger"
+        onclick={() => void onContextDeleteTask(false)}
+        disabled={!!currentAction}
+      >
+        删除（归档）
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        class="context-danger strong"
+        onclick={() => void onContextDeleteTask(true)}
+        disabled={!!currentAction}
+      >
+        删除（硬）
+      </button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -860,6 +1100,80 @@
     gap: 0.5rem;
   }
 
+  .detail-task-context-menu {
+    position: fixed;
+    z-index: 30;
+    width: 230px;
+    border: 1px solid #cfd8e6;
+    border-radius: 0.62rem;
+    background: #ffffff;
+    box-shadow: 0 18px 42px rgba(17, 36, 63, 0.2);
+    padding: 0.36rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+  }
+
+  .context-menu-head {
+    display: grid;
+    gap: 0.08rem;
+    padding: 0.24rem 0.38rem 0.34rem;
+    color: #64748b;
+    font-size: 0.72rem;
+    border-bottom: 1px solid #edf1f6;
+    margin-bottom: 0.12rem;
+  }
+
+  .context-menu-title {
+    min-width: 0;
+    color: #172b46;
+    font-size: 0.84rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .detail-task-context-menu button {
+    width: 100%;
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    border-radius: 0.42rem;
+    background: transparent;
+    color: #26364a;
+    padding: 0.42rem 0.48rem;
+    text-align: left;
+    font-size: 0.82rem;
+  }
+
+  .detail-task-context-menu button:hover:not(:disabled),
+  .detail-task-context-menu button:focus-visible {
+    background: #eef4ff;
+    color: #1f4f92;
+    outline: none;
+  }
+
+  .detail-task-context-menu button.context-danger {
+    color: #8a2a2a;
+  }
+
+  .detail-task-context-menu button.context-danger:hover:not(:disabled),
+  .detail-task-context-menu button.context-danger:focus-visible {
+    background: #fff0f0;
+    color: #7f1f1f;
+  }
+
+  .detail-task-context-menu button.context-danger.strong {
+    font-weight: 700;
+  }
+
+  .context-separator {
+    height: 1px;
+    background: #edf1f6;
+    margin: 0.14rem 0;
+  }
+
   .ghost-link {
     text-decoration: none;
     color: #2d4f7d;
@@ -919,6 +1233,10 @@
 
   .detail-top {
     background: transparent;
+  }
+
+  .detail-top:hover .detail-title {
+    color: #173f70;
   }
 
   .detail-title {
@@ -1213,6 +1531,11 @@
 
   .mini-tree-row.selected .mini-row-main {
     background: #e5e7eb;
+    color: #111827;
+  }
+
+  .mini-tree-row.context-open .mini-row-main {
+    background: #dfeaff;
     color: #111827;
   }
 

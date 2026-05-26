@@ -82,11 +82,25 @@
     const timer = window.setInterval(() => void refreshSidebar(), 30_000);
     const onDataChanged = () => void refreshSidebar(true);
     window.addEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+    window.addEventListener("contextmenu", onGlobalContextMenu);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener(APP_DATA_CHANGED_EVENT, onDataChanged);
+      window.removeEventListener("contextmenu", onGlobalContextMenu);
     };
   });
+
+  function onGlobalContextMenu(event: MouseEvent) {
+    if (event.defaultPrevented || shouldUseNativeContextMenu(event.target)) return;
+    event.preventDefault();
+  }
+
+  function shouldUseNativeContextMenu(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest(
+      'input, textarea, select, [contenteditable="true"], [data-native-context-menu="true"]'
+    );
+  }
 
   async function refreshSidebar(force = false) {
     if (sidebarLoading || (!force && !!sidebarAction)) return;
