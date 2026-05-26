@@ -110,6 +110,12 @@ pub fn stop_task(state: State<'_, AppState>, task_id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn complete_task_tree(state: State<'_, AppState>, task_id: String) -> AppResult<()> {
+    let mut conn = lock_db(&state)?;
+    app::complete_task_tree(&mut conn, task_id)
+}
+
+#[tauri::command]
 pub fn adjust_task_focus(
     state: State<'_, AppState>,
     task_id: String,
@@ -158,4 +164,3 @@ pub fn respond_rest_suggestion(
     let mut conn = lock_db(&state)?;
     app::respond_rest_suggestion(&mut conn, suggestion_id, accept)
 }
-

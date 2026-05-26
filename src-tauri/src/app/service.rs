@@ -341,6 +341,51 @@ pub fn stop_task(conn: &mut Connection, task_id: String) -> AppResult<()> {
     Ok(())
 }
 
+pub fn complete_task_tree(conn: &mut Connection, task_id: String) -> AppResult<()> {
+    ensure_task_exists(conn, &task_id)?;
+    let subtree_ids = collect_subtree_ids(conn, &task_id)?;
+    let ts = now_ts();
+    let tx = conn.transaction().map_err(to_error)?;
+
+    for id in &subtree_ids {
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?1 AND archived_at IS NULL LIMIT 1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(to_error)?;
+
+        let Some(status) = status else {
+            continue;
+        };
+
+        if status == STATUS_STOPPED {
+            continue;
+        }
+
+        tx.execute(
+            "UPDATE tasks SET status = ?1 WHERE id = ?2 AND archived_at IS NULL",
+            params![STATUS_STOPPED, id],
+        )
+        .map_err(to_error)?;
+        append_event(
+            &tx,
+            id,
+            EVENT_STOP,
+            ts,
+            Some(json!({
+                "reason": "complete_task_tree",
+                "root_task_id": task_id
+            })),
+        )?;
+    }
+
+    tx.commit().map_err(to_error)?;
+    Ok(())
+}
+
 pub fn adjust_task_focus(
     conn: &mut Connection,
     task_id: String,
@@ -395,7 +440,9 @@ pub fn insert_subtask_and_start(
             )));
         }
     } else {
-        return Err(conflict_error("no running task found for subtask insertion"));
+        return Err(conflict_error(
+            "no running task found for subtask insertion",
+        ));
     }
 
     let child_task_id = Uuid::new_v4().to_string();
@@ -1209,7 +1256,14 @@ fn collect_focus_intervals(
             }
             EVENT_PAUSE | EVENT_STOP => {
                 if let Some(start) = running_since.remove(&task_id) {
-                    push_interval(&mut intervals, &task_id, start, ts, window_start, window_end);
+                    push_interval(
+                        &mut intervals,
+                        &task_id,
+                        start,
+                        ts,
+                        window_start,
+                        window_end,
+                    );
                 }
             }
             _ => {}
@@ -1506,7 +1560,9 @@ fn ensure_ancestor_chain_valid(
             .map_err(to_error)?;
 
         let Some(next_parent) = parent else {
-            return Err(not_found_error(format!("task {task_id} not found or archived")));
+            return Err(not_found_error(format!(
+                "task {task_id} not found or archived"
+            )));
         };
 
         current_id = next_parent;
@@ -2089,6 +2145,3 @@ fn not_found_error(message: impl Into<String>) -> AppError {
 fn to_error(error: impl std::fmt::Display) -> AppError {
     AppError::internal("database operation failed", error.to_string())
 }
-
-
-

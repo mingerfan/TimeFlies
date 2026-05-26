@@ -160,6 +160,11 @@ export async function stopTask(taskId: string): Promise<void> {
   notifyDataChanged();
 }
 
+export async function completeTaskTree(taskId: string): Promise<void> {
+  await invoke("complete_task_tree", { taskId });
+  notifyDataChanged();
+}
+
 export async function adjustTaskFocus(taskId: string, deltaSeconds: number): Promise<void> {
   await invoke("adjust_task_focus", { taskId, deltaSeconds });
   notifyDataChanged();

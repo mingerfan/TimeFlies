@@ -34,6 +34,7 @@ pub fn run() {
             command_api::pause_task,
             command_api::resume_task,
             command_api::stop_task,
+            command_api::complete_task_tree,
             command_api::adjust_task_focus,
             command_api::insert_subtask_and_start,
             command_api::add_tag_to_task,
