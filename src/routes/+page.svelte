@@ -823,6 +823,7 @@
           <TodoList
             tasks={overview?.tasks ?? []}
             {selectedTaskId}
+            activeTaskId={overview?.active_task_id ?? null}
             busy={!!currentAction}
             onselect={(taskId) => (selectedTaskId = taskId)}
           />
