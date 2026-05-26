@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     APP_DATA_CHANGED_EVENT,
+    completeTaskTree,
     createTask,
     deleteTasks,
     getOverview,
@@ -28,9 +29,13 @@
     task: TaskRecord;
     depth: number;
     hasChildren: boolean;
+    visibleChildCount: number;
+    isMatch: boolean;
+    isPathOnly: boolean;
   };
 
   type DeleteMode = "archive" | "hard";
+  type TreeCompletionFilter = "open" | "all" | "done";
 
   let overview = $state<OverviewResponse | null>(null);
   let range = $state<OverviewRange>("week");
@@ -41,6 +46,7 @@
   let currentAction = $state("");
   let nowTs = $state(Math.floor(Date.now() / 1000));
   let treeQuery = $state("");
+  let treeCompletionFilter = $state<TreeCompletionFilter>("open");
   let quickAddTitle = $state("");
   let quickAddAsChild = $state(true);
   let batchMode = $state(false);
@@ -99,30 +105,60 @@
 
   const normalizedTreeQuery = $derived.by(() => treeQuery.trim().toLowerCase());
 
-  const visibleRows = $derived.by(() =>
-    flattenTaskRows(rootTasks, childrenByParent, expandedTaskIds, true, null)
+  const scopedTreeIds = $derived.by(() =>
+    buildScopedTreeIds(overview?.tasks ?? [], treeCompletionFilter, taskMap)
   );
 
-  const matchedTaskIds = $derived.by(() => {
+  const scopedRootTasks = $derived.by(() =>
+    rootTasks.filter((task) => scopedTreeIds.includedIds.has(task.id))
+  );
+
+  const treeSearchResult = $derived.by(() => {
     const query = normalizedTreeQuery;
     if (!query) return null;
-    const ids = new Set<string>();
-    for (const task of overview?.tasks ?? []) {
-      if (!task.title.toLowerCase().includes(query)) continue;
-      let cursor: string | null = task.id;
-      while (cursor) {
-        if (ids.has(cursor)) break;
-        ids.add(cursor);
-        cursor = taskMap.get(cursor)?.parent_id ?? null;
-      }
+
+    const matchedIds = new Set<string>();
+    const visibleIds = new Set<string>();
+    for (const taskId of scopedTreeIds.primaryIds) {
+      const task = taskMap.get(taskId);
+      if (!task || !task.title.toLowerCase().includes(query)) continue;
+      matchedIds.add(task.id);
+      addTaskAndAncestors(task.id, visibleIds, taskMap);
     }
-    return ids;
+
+    return { matchedIds, visibleIds };
   });
 
+  const visibleRows = $derived.by(() =>
+    flattenTaskRows(
+      scopedRootTasks,
+      childrenByParent,
+      expandedTaskIds,
+      true,
+      scopedTreeIds.includedIds,
+      scopedTreeIds.primaryIds,
+      null
+    )
+  );
+
   const displayRows = $derived.by(() =>
-    matchedTaskIds
-      ? flattenTaskRows(rootTasks, childrenByParent, expandedTaskIds, false, matchedTaskIds)
+    treeSearchResult
+      ? flattenTaskRows(
+          scopedRootTasks,
+          childrenByParent,
+          expandedTaskIds,
+          false,
+          treeSearchResult.visibleIds,
+          treeSearchResult.matchedIds,
+          treeSearchResult.matchedIds
+        )
       : visibleRows
+  );
+
+  const filteredTaskCount = $derived.by(() => scopedTreeIds.primaryIds.size);
+  const treeSearchMatchCount = $derived.by(() => treeSearchResult?.matchedIds.size ?? 0);
+  const selectedTaskIsVisible = $derived.by(() =>
+    selectedTaskId ? displayRows.some((row) => row.task.id === selectedTaskId) : true
   );
 
   const batchSelectedCount = $derived.by(() => batchSelectedTaskIds.size);
@@ -241,11 +277,27 @@
   }
 
   function expandAll() {
-    expandedTaskIds = new Set((overview?.tasks ?? []).map((task) => task.id));
+    expandedTaskIds = new Set(scopedTreeIds.includedIds);
   }
 
   function collapseAll() {
     expandedTaskIds = new Set();
+  }
+
+  function revealSelectedTask() {
+    if (!selectedTaskId) return;
+    treeCompletionFilter = "all";
+    treeQuery = "";
+    expandedTaskIds = expandAncestors(selectedTaskId, expandedTaskIds);
+  }
+
+  function expandAncestors(taskId: string, expandedIds: Set<string>): Set<string> {
+    const next = new Set(expandedIds);
+    const chain = buildTaskChain(taskId, taskMap);
+    for (const task of chain.slice(0, -1)) {
+      next.add(task.id);
+    }
+    return next;
   }
 
   async function ensureSwitchFromActive(targetTaskId: string): Promise<boolean> {
@@ -290,6 +342,13 @@
     if (!selectedTask) return;
     if (selectedTask.status !== "running" && selectedTask.status !== "paused") return;
     await runAction("停止任务", () => stopTask(selectedTask.id));
+  }
+
+  async function onCompleteSelected() {
+    if (!selectedTask || selectedTask.status === "stopped") return;
+    await runAction(selectedTask.parent_id ? "完成任务分支" : "完成待办", () =>
+      completeTaskTree(selectedTask.id)
+    );
   }
 
   async function onArchiveSelected() {
@@ -409,6 +468,7 @@
   function primaryActionLabel(task: TaskRecord): string {
     if (task.status === "running") return "暂停";
     if (task.status === "paused") return "恢复";
+    if (task.status === "stopped") return "重新开始";
     return "开始";
   }
 
@@ -482,16 +542,90 @@
   function taskQuickActionLabel(task: TaskRecord): string {
     if (task.status === "running") return "暂停任务";
     if (task.status === "paused") return "恢复任务";
+    if (task.status === "stopped") return "重新开始任务";
     return "开始任务";
   }
 
   function taskQuickActionSymbol(task: TaskRecord): string {
     if (task.status === "running") return "⏸";
+    if (task.status === "stopped") return "↻";
     return "▶";
   }
 
   function resetTreeQuery() {
     treeQuery = "";
+  }
+
+  function taskMatchesCompletionFilter(task: TaskRecord, filter: TreeCompletionFilter): boolean {
+    if (filter === "all") return true;
+    if (filter === "done") return task.status === "stopped";
+    return task.status !== "stopped";
+  }
+
+  function addTaskAndAncestors(
+    taskId: string,
+    collector: Set<string>,
+    map: Map<string, TaskRecord>
+  ) {
+    let cursor: string | null = taskId;
+    while (cursor) {
+      if (collector.has(cursor)) break;
+      collector.add(cursor);
+      cursor = map.get(cursor)?.parent_id ?? null;
+    }
+  }
+
+  function buildScopedTreeIds(
+    tasks: TaskRecord[],
+    filter: TreeCompletionFilter,
+    map: Map<string, TaskRecord>
+  ): { includedIds: Set<string>; primaryIds: Set<string> } {
+    const includedIds = new Set<string>();
+    const primaryIds = new Set<string>();
+
+    for (const task of tasks) {
+      if (!taskMatchesCompletionFilter(task, filter)) continue;
+      primaryIds.add(task.id);
+      addTaskAndAncestors(task.id, includedIds, map);
+    }
+
+    return { includedIds, primaryIds };
+  }
+
+  function treeCompletionFilterLabel(filter: TreeCompletionFilter): string {
+    if (filter === "all") return "全部";
+    if (filter === "done") return "已完成";
+    return "未完成";
+  }
+
+  function treeSummaryText(): string {
+    const total = overview?.tasks.length ?? 0;
+    const scope = treeCompletionFilterLabel(treeCompletionFilter);
+    if (normalizedTreeQuery) {
+      return `${scope} ${filteredTaskCount} 项 · 匹配 ${treeSearchMatchCount} 项`;
+    }
+    return `${scope} ${filteredTaskCount} 项 / 全部 ${total} 项`;
+  }
+
+  function emptyTreeMessage(): string {
+    const query = treeQuery.trim();
+    if (query) {
+      return `没有在${treeCompletionFilterLabel(treeCompletionFilter)}任务中匹配“${query}”的结果。`;
+    }
+    if (treeCompletionFilter === "open") return "当前没有未完成任务。";
+    if (treeCompletionFilter === "done") return "当前没有已完成任务。";
+    return "当前暂无任务。";
+  }
+
+  function rowMetaText(row: VisibleTaskRow): string {
+    const parts = [
+      statusLabel(row.task.status),
+      `In ${formatSeconds(taskLiveInclusiveSeconds(row.task))}`,
+    ];
+    if (row.visibleChildCount > 0) {
+      parts.push(`${row.visibleChildCount} 子任务`);
+    }
+    return parts.join(" · ");
   }
 
   function areSetsEqual(left: Set<string>, right: Set<string>) {
@@ -626,7 +760,9 @@
     childrenMap: Map<string, TaskRecord[]>,
     expandedIds: Set<string>,
     respectExpanded: boolean,
-    includeIds: Set<string> | null
+    includeIds: Set<string> | null,
+    primaryIds: Set<string> | null,
+    matchIds: Set<string> | null
   ): VisibleTaskRow[] {
     const rows: VisibleTaskRow[] = [];
     const visited = new Set<string>();
@@ -635,15 +771,21 @@
       if (visited.has(task.id)) return;
       visited.add(task.id);
       const children = childrenMap.get(task.id) ?? [];
+      const visibleChildren = includeIds
+        ? children.filter((child) => includeIds.has(child.id))
+        : children;
       if (!includeIds || includeIds.has(task.id)) {
         rows.push({
           task,
           depth,
-          hasChildren: children.length > 0,
+          hasChildren: visibleChildren.length > 0,
+          visibleChildCount: visibleChildren.length,
+          isMatch: matchIds?.has(task.id) ?? false,
+          isPathOnly: !!primaryIds && !primaryIds.has(task.id),
         });
       }
       if (respectExpanded && !expandedIds.has(task.id)) return;
-      for (const child of children) {
+      for (const child of visibleChildren) {
         visit(child, depth + 1);
       }
     };
@@ -683,24 +825,35 @@
       {/if}
     </div>
     <div class="selection-actions">
-      <button type="button" class="action-btn action-secondary" onclick={() => window.location.href = '/'}>
-        打开任务详情页
-      </button>
       <button type="button" class="action-btn action-primary" onclick={onPrimarySelectedToggle} disabled={!selectedTask || !!currentAction}>
         {selectedTask ? primaryActionLabel(selectedTask) : "开始"}
       </button>
-      <div class="more-actions-wrapper">
-        <button type="button" class="action-btn action-subtle" onclick={(e) => {
-          const details = e.currentTarget.closest('.more-actions-wrapper')!.querySelector('details')!;
-          details.open = !details.open;
-        }}>
+      <button
+        type="button"
+        class="action-btn action-secondary"
+        onclick={onCompleteSelected}
+        disabled={!selectedTask || selectedTask.status === "stopped" || !!currentAction}
+      >
+        {selectedTask?.parent_id ? "完成分支" : "完成待办"}
+      </button>
+      <details class="more-actions-wrapper">
+        <summary class="action-btn action-subtle">
           更多操作
-        </button>
-        <details class="more-actions">
-          <summary style="display: none;"></summary>
-          <div class="more-actions-menu">
+        </summary>
+        <div class="more-actions-menu">
+          <button type="button" class="secondary" onclick={() => window.location.href = '/'}>
+            打开详情页
+          </button>
           <button type="button" class="secondary" onclick={onStopSelected} disabled={!selectedTask || !!currentAction}>
             停止
+          </button>
+          <button
+            type="button"
+            class={batchMode ? "danger active" : "subtle-danger"}
+            onclick={toggleBatchMode}
+            disabled={!overview?.tasks.length || !!currentAction}
+          >
+            {batchMode ? "退出批量删除" : "批量删除"}
           </button>
           <button
             type="button"
@@ -719,24 +872,14 @@
             删除（硬）
           </button>
         </div>
-        </details>
-      </div>
-      <button
-        type="button"
-        class="action-btn action-danger"
-        class:active={batchMode}
-        onclick={toggleBatchMode}
-        disabled={!overview?.tasks.length || !!currentAction}
-      >
-        {batchMode ? "退出批量" : "批量删除"}
-      </button>
+      </details>
     </div>
   </section>
 
   <section class="panel tree-panel">
     <div class="panel-head">
       <h2>任务树</h2>
-      <span>{overview?.tasks.length ?? 0} 项</span>
+      <span>{treeSummaryText()}</span>
     </div>
 
     <form class="quick-row" onsubmit={onCreateTask}>
@@ -765,22 +908,54 @@
     <div class="tree-toolbar">
       <input
         type="text"
-        placeholder="搜索任务..."
+        placeholder="搜索当前视图任务..."
         bind:value={treeQuery}
         disabled={!overview?.tasks.length}
         aria-label="搜索任务"
       />
-      <button type="button" class="subtle" onclick={expandAll} disabled={!overview?.tasks.length}>展开</button>
-      <button type="button" class="subtle" onclick={collapseAll} disabled={!overview?.tasks.length}>收起</button>
-      <button
-        type="button"
-        class="subtle"
-        onclick={resetTreeQuery}
-        disabled={!treeQuery.trim() || !overview?.tasks.length}
-      >
-        清除
-      </button>
+      <div class="tree-filter" aria-label="任务完成状态筛选">
+        <button
+          type="button"
+          class:active={treeCompletionFilter === "open"}
+          onclick={() => (treeCompletionFilter = "open")}
+        >
+          未完成
+        </button>
+        <button
+          type="button"
+          class:active={treeCompletionFilter === "all"}
+          onclick={() => (treeCompletionFilter = "all")}
+        >
+          全部
+        </button>
+        <button
+          type="button"
+          class:active={treeCompletionFilter === "done"}
+          onclick={() => (treeCompletionFilter = "done")}
+        >
+          已完成
+        </button>
+      </div>
+      <div class="tree-tools">
+        <button type="button" class="subtle" onclick={expandAll} disabled={!overview?.tasks.length}>展开</button>
+        <button type="button" class="subtle" onclick={collapseAll} disabled={!overview?.tasks.length}>收起</button>
+        <button
+          type="button"
+          class="subtle"
+          onclick={resetTreeQuery}
+          disabled={!treeQuery.trim() || !overview?.tasks.length}
+        >
+          清除
+        </button>
+      </div>
     </div>
+
+    {#if selectedTask && !selectedTaskIsVisible}
+      <div class="tree-notice">
+        <span>选中任务不在当前视图中</span>
+        <button type="button" class="subtle" onclick={revealSelectedTask}>定位</button>
+      </div>
+    {/if}
 
     {#if batchMode}
       <div class="batch-toolbar">
@@ -806,7 +981,7 @@
     {#if !overview || overview.tasks.length === 0}
       <p class="empty">当前暂无任务。</p>
     {:else if displayRows.length === 0}
-      <p class="empty">没有匹配“{treeQuery}”的任务。</p>
+      <p class="empty">{emptyTreeMessage()}</p>
     {:else}
       <div class="tree-frame scroll-hint">
         <ul class="tree-list" role="tree" aria-label="任务树">
@@ -818,6 +993,9 @@
                 class:selected={selectedTaskId === row.task.id}
                 class:active-ancestor={activePathIds.has(row.task.id) && activeTaskId !== row.task.id}
                 class:active-leaf={activeTaskId === row.task.id}
+                class:completed={row.task.status === "stopped"}
+                class:match={row.isMatch}
+                class:path-only={row.isPathOnly}
                 style={`--depth:${row.depth}`}
               >
                 {#if batchMode}
@@ -857,10 +1035,25 @@
                   onkeydown={(event) => onTaskRowKeydown(event, row)}
                   title={`${row.task.title}\n${statusLabel(row.task.status)} · Ex ${formatSeconds(taskLiveExclusiveSeconds(row.task))} · In ${formatSeconds(taskLiveInclusiveSeconds(row.task))}`}
                 >
-                  <span class="title">{row.task.title}</span>
+                  <span
+                    class="status-dot"
+                    class:running={row.task.status === "running"}
+                    class:paused={row.task.status === "paused"}
+                    class:stopped={row.task.status === "stopped"}
+                    aria-hidden="true"
+                  ></span>
+                  <span class="row-copy">
+                    <span class="title-line">
+                      <span class="title">{row.task.title}</span>
+                      {#if row.isPathOnly}
+                        <span class="path-note">路径</span>
+                      {/if}
+                    </span>
+                    <span class="row-meta">{rowMetaText(row)}</span>
+                  </span>
                 </button>
 
-                {#if !batchMode}
+                {#if !batchMode && !row.isPathOnly}
                   <button
                     type="button"
                     class="row-quick"
@@ -1001,30 +1194,31 @@
   }
 
   .selection-actions > button,
-  .selection-actions > div > button.action-btn {
-    min-width: 7.2rem;
-  }
-
-  .selection-actions > .active,
-  .action-btn.active {
-    background: #ffecec;
-    color: #7f1f1f;
+  .selection-actions > details > summary.action-btn {
+    min-width: 6.8rem;
   }
 
   .more-actions-wrapper {
     position: relative;
   }
 
-  .more-actions-wrapper details {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    margin-top: 0.35rem;
-    all: revert;
+  .more-actions-wrapper summary {
+    list-style: none;
   }
 
-  .more-actions-wrapper details summary {
+  .more-actions-wrapper summary.action-btn {
+    border-radius: 0.62rem;
+    cursor: pointer;
+    padding: 0.5rem 0.72rem;
+    user-select: none;
+  }
+
+  .more-actions-wrapper summary::-webkit-details-marker {
     display: none;
+  }
+
+  .more-actions-wrapper[open] summary {
+    background: #e7edf5;
   }
 
   .more-actions-menu {
@@ -1048,6 +1242,11 @@
     display: flex;
     justify-content: flex-start;
     text-align: left;
+  }
+
+  .more-actions-menu button.active {
+    background: #8b2a2a;
+    color: #fff;
   }
 
   .tree-panel {
@@ -1098,7 +1297,7 @@
 
   .tree-toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 0.4rem;
     align-items: center;
   }
@@ -1112,6 +1311,42 @@
     padding: 0.42rem 0.54rem;
   }
 
+  .tree-filter {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    border: 1px solid #d0d7de;
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: #ffffff;
+  }
+
+  .tree-filter button {
+    border: none;
+    border-right: 1px solid #d0d7de;
+    border-radius: 0;
+    background: #ffffff;
+    color: #374151;
+    padding: 0.4rem 0.58rem;
+    min-width: 4.1rem;
+    font-size: 0.8rem;
+  }
+
+  .tree-filter button:last-child {
+    border-right: none;
+  }
+
+  .tree-filter button.active {
+    background: #e7f0ff;
+    color: #204f85;
+    font-weight: 700;
+  }
+
+  .tree-tools {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.35rem;
+  }
+
   .tree-toolbar .subtle {
     border-color: #d0d7de;
     background: #ffffff;
@@ -1119,6 +1354,28 @@
     padding: 0.4rem 0.52rem;
     min-width: 4rem;
     font-size: 0.8rem;
+  }
+
+  .tree-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    border: 1px solid #d5dde7;
+    border-radius: 0.56rem;
+    background: #f8fafc;
+    color: #536273;
+    padding: 0.46rem 0.55rem;
+    font-size: 0.82rem;
+  }
+
+  .tree-notice .subtle {
+    flex: 0 0 auto;
+    border: 1px solid #d0d7de;
+    background: #ffffff;
+    color: #374151;
+    padding: 0.32rem 0.56rem;
+    min-width: 3.4rem;
   }
 
   .batch-toolbar {
@@ -1253,6 +1510,10 @@
     color: #2f3437;
     font-size: 0.9rem;
     line-height: 1.3;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.42rem;
   }
 
   .tree-row:hover .row-main,
@@ -1275,11 +1536,100 @@
     color: #111827;
   }
 
-  .row-main .title {
+  .tree-row.match .row-main {
+    background: #fff5cc;
+    color: #1f2937;
+  }
+
+  .tree-row.selected.match .row-main {
+    background: #dfeaff;
+  }
+
+  .tree-row.completed .row-main {
+    color: #6d7d90;
+  }
+
+  .tree-row.completed .title {
+    text-decoration: line-through;
+  }
+
+  .tree-row.path-only:not(.selected) .row-main {
+    color: #7b8794;
+  }
+
+  .tree-row.path-only .title {
+    font-weight: 400;
+    text-decoration: none;
+  }
+
+  .tree-row.path-only .row-meta {
+    display: none;
+  }
+
+  .status-dot {
+    width: 0.46rem;
+    height: 0.46rem;
+    border-radius: 999px;
+    background: #94a3b8;
+    box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.12);
+  }
+
+  .status-dot.running {
+    background: #2f855a;
+    box-shadow: 0 0 0 3px rgba(47, 133, 90, 0.14);
+  }
+
+  .status-dot.paused {
+    background: #b7791f;
+    box-shadow: 0 0 0 3px rgba(183, 121, 31, 0.14);
+  }
+
+  .status-dot.stopped {
+    background: #9ca3af;
+    box-shadow: none;
+  }
+
+  .row-copy {
+    display: grid;
+    min-width: 0;
+    gap: 0.08rem;
+  }
+
+  .title-line {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+
+  .title-line .title {
+    display: block;
+    flex: 1;
+    min-width: 0;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .row-meta {
+    min-width: 0;
+    color: #6b7280;
+    font-size: 0.72rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .path-note {
+    flex: 0 0 auto;
+    border: 1px solid #d5dde7;
+    border-radius: 999px;
+    color: #6b7280;
+    background: #f6f8fb;
+    padding: 0.02rem 0.34rem;
+    font-size: 0.68rem;
+    line-height: 1.35;
   }
 
   .row-quick {
@@ -1383,20 +1733,6 @@
     background: #e7edf5;
   }
 
-  .action-danger {
-    background: #ffe9e9;
-    color: #7f1f1f;
-  }
-
-  .action-danger:hover:not(:disabled) {
-    background: #ffdede;
-  }
-
-  .action-danger.active {
-    background: #8b2a2a;
-    color: #fff;
-  }
-
   button.secondary {
     background: #edf3ff;
     color: #2f629f;
@@ -1467,7 +1803,26 @@
     }
 
     .tree-toolbar {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr;
+    }
+
+    .tree-filter {
+      grid-template-columns: repeat(3, 1fr);
+      width: 100%;
+    }
+
+    .tree-filter button {
+      min-width: 0;
+    }
+
+    .tree-tools {
+      justify-content: stretch;
+      width: 100%;
+    }
+
+    .tree-tools .subtle {
+      flex: 1;
+      min-width: 0;
     }
 
     .batch-toolbar {
