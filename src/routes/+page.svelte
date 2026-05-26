@@ -10,6 +10,7 @@
     type TaskRecord,
   } from "$lib/api";
   import CommandBar from "../ConfiguredCommandBar.svelte";
+  import TodoList from "$lib/components/TodoList.svelte";
   import { handleCommandInput, type CommandRunActionOptions } from "../command-handler";
   import { notifyCommandResult, notifyError } from "$lib/notifications";
   import {
@@ -654,25 +655,34 @@
           </section>
         {/if}
 
-        <section class="detail-command scroll-hint">
-          <h2>命令模式</h2>
-          <p class="meta">
-            当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
-            {#if activeTask && selectedTask && activeTask.id !== selectedTask.id}
-              （点击上方主工作台可切换为活动任务）
-            {/if}
-          </p>
-          <CommandBar
-            bind:value={commandInput}
-            busy={!!currentAction}
+        <section class="detail-workspace">
+          <TodoList
             tasks={overview?.tasks ?? []}
-            onexecute={onCommandExecute}
+            {selectedTaskId}
+            busy={!!currentAction}
+            onselect={(taskId) => (selectedTaskId = taskId)}
           />
-          <ul class="command-hints">
-            {#each commandContextHints as hint}
-              <li>{hint}</li>
-            {/each}
-          </ul>
+
+          <section class="detail-command scroll-hint">
+            <h2>命令模式</h2>
+            <p class="meta">
+              当前操控目标：{selectedTask ? selectedTask.title : "未选择任务"}
+              {#if activeTask && selectedTask && activeTask.id !== selectedTask.id}
+                （点击上方主工作台可切换为活动任务）
+              {/if}
+            </p>
+            <CommandBar
+              bind:value={commandInput}
+              busy={!!currentAction}
+              tasks={overview?.tasks ?? []}
+              onexecute={onCommandExecute}
+            />
+            <ul class="command-hints">
+              {#each commandContextHints as hint}
+                <li>{hint}</li>
+              {/each}
+            </ul>
+          </section>
         </section>
       </article>
     </section>
@@ -900,6 +910,7 @@
   }
 
   .detail-top,
+  .detail-workspace,
   .detail-command {
     background: transparent;
     border-radius: 0;
@@ -985,12 +996,21 @@
     line-height: 1.35;
   }
 
-  .detail-command {
+  .detail-workspace {
     border-top: 1px solid #d8dee4;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+    padding-top: 0.72rem;
+    display: grid;
+    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .detail-command {
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    padding-top: 0.72rem;
     padding-right: 0.14rem;
   }
 
@@ -1347,6 +1367,7 @@
 
     .main-stack,
     .detail-main,
+    .detail-workspace,
     .side-rail {
       height: auto;
       grid-template-rows: auto;
@@ -1374,6 +1395,13 @@
     .side-rail {
       height: auto;
       grid-template-rows: auto auto;
+      overflow: visible;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .detail-workspace {
+      grid-template-columns: 1fr;
       overflow: visible;
     }
   }
