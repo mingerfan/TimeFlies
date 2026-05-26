@@ -9,6 +9,7 @@
     type TaskRecord,
   } from "$lib/api";
   import { notifyError, pushNotification } from "$lib/notifications";
+  import CreateSubtaskDialog from "$lib/components/CreateSubtaskDialog.svelte";
   import {
     buildSubtreeRecentActivityMap,
     compareTasksByRecentActivity,
@@ -40,6 +41,7 @@
   let draftTitle = $state("");
   let pendingTaskId = $state<string | null>(null);
   let todoContextMenu = $state<TodoContextMenu | null>(null);
+  let createSubtaskParentId = $state<string | null>(null);
 
   const subtreeRecentActivityMap = $derived.by(() => buildSubtreeRecentActivityMap(tasks));
   const taskMap = $derived.by(() => {
@@ -59,6 +61,9 @@
   );
   const contextMenuTask = $derived.by(() =>
     todoContextMenu ? (taskMap.get(todoContextMenu.taskId) ?? null) : null
+  );
+  const createSubtaskParent = $derived.by(() =>
+    createSubtaskParentId ? (taskMap.get(createSubtaskParentId) ?? null) : null
   );
   const disabled = $derived(busy || !!pendingTaskId);
 
@@ -183,14 +188,23 @@
     const task = contextMenuTask;
     if (!task || pendingTaskId) return;
     closeTodoContextMenu();
-    const title = window.prompt(`给「${task.title}」新增子任务`);
-    const trimmedTitle = title?.trim();
-    if (!trimmedTitle) return;
+    createSubtaskParentId = task.id;
+  }
+
+  function closeCreateSubtaskDialog() {
+    if (pendingTaskId) return;
+    createSubtaskParentId = null;
+  }
+
+  async function submitCreateSubtask(title: string) {
+    const task = createSubtaskParent;
+    if (!task || pendingTaskId) return;
 
     pendingTaskId = task.id;
     try {
-      const childId = await createTask(trimmedTitle, task.id);
+      const childId = await createTask(title, task.id);
       onselect?.(childId);
+      createSubtaskParentId = null;
     } catch (error) {
       notifyError("新增子任务失败", error, `todo-create-child-error:${task.id}`);
     } finally {
@@ -346,6 +360,14 @@
       </button>
     </div>
   {/if}
+
+  <CreateSubtaskDialog
+    open={!!createSubtaskParent}
+    parentTitle={createSubtaskParent?.title ?? ""}
+    busy={disabled}
+    oncancel={closeCreateSubtaskDialog}
+    onsubmit={submitCreateSubtask}
+  />
 </section>
 
 <style>

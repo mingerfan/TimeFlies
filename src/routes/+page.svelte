@@ -13,6 +13,7 @@
     type TaskRecord,
   } from "$lib/api";
   import CommandBar from "../ConfiguredCommandBar.svelte";
+  import CreateSubtaskDialog from "$lib/components/CreateSubtaskDialog.svelte";
   import TodoList from "$lib/components/TodoList.svelte";
   import { handleCommandInput, type CommandRunActionOptions } from "../command-handler";
   import { notifyCommandResult, notifyError } from "$lib/notifications";
@@ -58,6 +59,7 @@
   let commandInput = $state("");
   let lastCommandRunErrorDetail = $state<string | null>(null);
   let detailContextMenu = $state<DetailContextMenu | null>(null);
+  let createSubtaskParentId = $state<string | null>(null);
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -164,6 +166,9 @@
   });
   const contextMenuTask = $derived.by(() =>
     detailContextMenu ? (taskMap.get(detailContextMenu.taskId) ?? null) : null
+  );
+  const createSubtaskParent = $derived.by(() =>
+    createSubtaskParentId ? (taskMap.get(createSubtaskParentId) ?? null) : null
   );
   const contextMenuMiniRow = $derived.by(() =>
     detailContextMenu
@@ -526,16 +531,25 @@
     const task = contextMenuTask;
     if (!task) return;
     closeDetailContextMenu();
-    const title = window.prompt(`给「${task.title}」新增子任务`);
-    const trimmedTitle = title?.trim();
-    if (!trimmedTitle) return;
+    createSubtaskParentId = task.id;
+  }
 
-    const childId = await runAction("创建子任务", () => createTask(trimmedTitle, task.id));
+  function closeCreateSubtaskDialog() {
+    if (currentAction) return;
+    createSubtaskParentId = null;
+  }
+
+  async function submitCreateSubtask(title: string) {
+    const task = createSubtaskParent;
+    if (!task || currentAction) return;
+
+    const childId = await runAction("创建子任务", () => createTask(title, task.id));
     if (!childId) return;
     selectedTaskId = childId;
     const next = new Set(expandedMiniTaskIds);
     next.add(task.id);
     expandedMiniTaskIds = next;
+    createSubtaskParentId = null;
   }
 
   function onContextToggleMiniExpand() {
@@ -1009,6 +1023,14 @@
       </button>
     </div>
   {/if}
+
+  <CreateSubtaskDialog
+    open={!!createSubtaskParent}
+    parentTitle={createSubtaskParent?.title ?? ""}
+    busy={loading || !!currentAction}
+    oncancel={closeCreateSubtaskDialog}
+    onsubmit={submitCreateSubtask}
+  />
 </main>
 
 <style>

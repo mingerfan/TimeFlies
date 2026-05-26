@@ -14,6 +14,7 @@
     type OverviewResponse,
     type TaskRecord,
   } from "$lib/api";
+  import CreateSubtaskDialog from "$lib/components/CreateSubtaskDialog.svelte";
   import { notifyError, pushNotification } from "$lib/notifications";
   import {
     buildSubtreeRecentActivityMap,
@@ -58,6 +59,7 @@
   let batchDeleteMode = $state<DeleteMode>("archive");
   let batchSelectedTaskIds = $state<Set<string>>(new Set());
   let taskContextMenu = $state<TaskContextMenu | null>(null);
+  let createSubtaskParentId = $state<string | null>(null);
 
   const taskMap = $derived.by(() => {
     const map = new Map<string, TaskRecord>();
@@ -168,6 +170,9 @@
   );
   const contextMenuTask = $derived.by(() =>
     taskContextMenu ? (taskMap.get(taskContextMenu.taskId) ?? null) : null
+  );
+  const createSubtaskParent = $derived.by(() =>
+    createSubtaskParentId ? (taskMap.get(createSubtaskParentId) ?? null) : null
   );
   const contextMenuRow = $derived.by(() =>
     taskContextMenu
@@ -645,16 +650,25 @@
     const task = contextMenuTask;
     if (!task) return;
     closeTaskContextMenu();
-    const title = window.prompt(`给「${task.title}」新增子任务`);
-    const trimmedTitle = title?.trim();
-    if (!trimmedTitle) return;
+    createSubtaskParentId = task.id;
+  }
 
-    const childId = await runAction("创建子任务", () => createTask(trimmedTitle, task.id));
+  function closeCreateSubtaskDialog() {
+    if (currentAction) return;
+    createSubtaskParentId = null;
+  }
+
+  async function submitCreateSubtask(title: string) {
+    const task = createSubtaskParent;
+    if (!task || currentAction) return;
+
+    const childId = await runAction("创建子任务", () => createTask(title, task.id));
     if (!childId) return;
     selectedTaskId = childId;
     const next = new Set(expandedTaskIds);
     next.add(task.id);
     expandedTaskIds = next;
+    createSubtaskParentId = null;
   }
 
   function onContextToggleExpand() {
@@ -1327,6 +1341,14 @@
       </button>
     </div>
   {/if}
+
+  <CreateSubtaskDialog
+    open={!!createSubtaskParent}
+    parentTitle={createSubtaskParent?.title ?? ""}
+    busy={loading || !!currentAction}
+    oncancel={closeCreateSubtaskDialog}
+    onsubmit={submitCreateSubtask}
+  />
 </main>
 
 <style>
