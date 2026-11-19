@@ -65,6 +65,21 @@ struct FocusAdjustment {
 }
 
 #[derive(Debug)]
+enum FocusCredit {
+    Interval { start_ts: i64, end_ts: i64 },
+    Adjustment { ts: i64, seconds: i64 },
+}
+
+impl FocusCredit {
+    fn seconds(&self) -> i64 {
+        match self {
+            Self::Interval { start_ts, end_ts } => end_ts - start_ts,
+            Self::Adjustment { seconds, .. } => *seconds,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct SummaryWindow {
     range: String,
     range_start: i64,
@@ -398,9 +413,13 @@ pub fn adjust_task_focus(
 
     let now = now_ts();
     let total_focus_seconds = task_total_focus_seconds(conn, &task_id, now)?;
-    if total_focus_seconds + delta_seconds < 0 {
+    if total_focus_seconds
+        .checked_add(delta_seconds)
+        .filter(|total| *total >= 0)
+        .is_none()
+    {
         return Err(validation_error(
-            "adjustment would make task focus time negative",
+            "adjustment would make task focus time negative or overflow",
         ));
     }
 
@@ -703,7 +722,8 @@ pub fn get_focus_summary(
         .into_iter()
         .map(|task| (task.id.clone(), task))
         .collect::<HashMap<_, _>>();
-    let intervals = collect_focus_intervals(conn, Some(window.range_start), window.range_end)?;
+    let (intervals, adjustments) =
+        collect_focus_history(conn, Some(window.range_start), window.range_end)?;
 
     let mut seconds_by_day: HashMap<i64, HashMap<String, i64>> = HashMap::new();
     let mut segments_by_day: HashMap<i64, Vec<FocusTimelineSegment>> = HashMap::new();
@@ -736,7 +756,7 @@ pub fn get_focus_summary(
         }
     }
 
-    for adjustment in collect_focus_adjustments(conn, Some(window.range_start), window.range_end)? {
+    for adjustment in adjustments {
         let day_start = local_day_start_ts(adjustment.ts);
         let day_bucket = seconds_by_day.entry(day_start).or_default();
         *day_bucket.entry(adjustment.task_id).or_insert(0) += adjustment.delta_seconds;
@@ -1215,117 +1235,140 @@ fn replay_exclusive_seconds(
     window_start: Option<i64>,
     window_end: i64,
 ) -> AppResult<HashMap<String, i64>> {
-    let intervals = collect_focus_intervals(conn, window_start, window_end)?;
+    let (intervals, adjustments) = collect_focus_history(conn, window_start, window_end)?;
     let mut exclusive: HashMap<String, i64> = HashMap::new();
     for interval in intervals {
         *exclusive.entry(interval.task_id).or_insert(0) += interval.end_ts - interval.start_ts;
     }
-    for adjustment in collect_focus_adjustments(conn, window_start, window_end)? {
+    for adjustment in adjustments {
         *exclusive.entry(adjustment.task_id).or_insert(0) += adjustment.delta_seconds;
     }
     Ok(exclusive)
 }
 
-fn collect_focus_intervals(
+fn collect_focus_history(
     conn: &Connection,
     window_start: Option<i64>,
     window_end: i64,
-) -> AppResult<Vec<FocusInterval>> {
+) -> AppResult<(Vec<FocusInterval>, Vec<FocusAdjustment>)> {
     let mut stmt = conn
-        .prepare("SELECT task_id, event_type, ts FROM time_events ORDER BY ts ASC, id ASC")
+        .prepare(
+            "SELECT task_id, event_type, ts, payload
+             FROM time_events
+             WHERE event_type IN ('start', 'resume', 'pause', 'stop', 'adjust')
+               AND ts <= ?1
+             ORDER BY ts ASC, id ASC",
+        )
         .map_err(to_error)?;
-
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![window_end], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })
         .map_err(to_error)?;
 
     let mut running_since: HashMap<String, i64> = HashMap::new();
-    let mut intervals = Vec::new();
-
+    let mut credits_by_task: HashMap<String, Vec<FocusCredit>> = HashMap::new();
     for row in rows {
-        let (task_id, event_type, ts) = row.map_err(to_error)?;
+        let (task_id, event_type, ts, payload) = row.map_err(to_error)?;
         match event_type.as_str() {
             EVENT_START | EVENT_RESUME => {
                 running_since.entry(task_id).or_insert(ts);
             }
-            EVENT_PAUSE | EVENT_STOP => {
-                if let Some(start) = running_since.remove(&task_id) {
-                    push_interval(
-                        &mut intervals,
-                        &task_id,
-                        start,
-                        ts,
-                        window_start,
-                        window_end,
-                    );
+            EVENT_PAUSE | EVENT_STOP | EVENT_ADJUST => {
+                let credits = credits_by_task.entry(task_id.clone()).or_default();
+                if let Some(start_ts) = running_since.remove(&task_id) {
+                    if ts > start_ts {
+                        credits.push(FocusCredit::Interval {
+                            start_ts,
+                            end_ts: ts,
+                        });
+                    }
+                    if event_type == EVENT_ADJUST {
+                        running_since.insert(task_id, ts);
+                    }
+                }
+                if event_type == EVENT_ADJUST {
+                    apply_focus_adjustment(credits, ts, parse_adjustment_delta(payload.as_deref()));
                 }
             }
             _ => {}
         }
     }
-
-    for (task_id, start) in running_since {
-        push_interval(
-            &mut intervals,
-            &task_id,
-            start,
-            window_end,
-            window_start,
-            window_end,
-        );
+    for (task_id, start_ts) in running_since {
+        if window_end > start_ts {
+            credits_by_task
+                .entry(task_id)
+                .or_default()
+                .push(FocusCredit::Interval {
+                    start_ts,
+                    end_ts: window_end,
+                });
+        }
     }
 
-    Ok(intervals)
+    // Correct the full history before clipping: an adjustment made today may
+    // remove time recorded yesterday, but must never become a debt on new time.
+    let mut intervals = Vec::new();
+    let mut adjustments = Vec::new();
+    for (task_id, credits) in credits_by_task {
+        for credit in credits {
+            match credit {
+                FocusCredit::Interval { start_ts, end_ts } => {
+                    push_interval(
+                        &mut intervals,
+                        &task_id,
+                        start_ts,
+                        end_ts,
+                        window_start,
+                        window_end,
+                    );
+                }
+                FocusCredit::Adjustment { ts, seconds } => {
+                    if window_start.is_none_or(|start| ts >= start) {
+                        adjustments.push(FocusAdjustment {
+                            task_id: task_id.clone(),
+                            ts,
+                            delta_seconds: seconds,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok((intervals, adjustments))
 }
 
-fn collect_focus_adjustments(
-    conn: &Connection,
-    window_start: Option<i64>,
-    window_end: i64,
-) -> AppResult<Vec<FocusAdjustment>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT task_id, ts, payload
-             FROM time_events
-             WHERE event_type = ?1
-             ORDER BY ts ASC, id ASC",
-        )
-        .map_err(to_error)?;
-
-    let rows = stmt
-        .query_map(params![EVENT_ADJUST], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })
-        .map_err(to_error)?;
-
-    let mut adjustments = Vec::new();
-    for row in rows {
-        let (task_id, ts, payload) = row.map_err(to_error)?;
-        if ts > window_end || window_start.is_some_and(|start| ts < start) {
-            continue;
-        }
-        let delta_seconds = parse_adjustment_delta(payload.as_deref());
-        if delta_seconds == 0 {
-            continue;
-        }
-        adjustments.push(FocusAdjustment {
-            task_id,
+fn apply_focus_adjustment(credits: &mut Vec<FocusCredit>, ts: i64, delta_seconds: i64) {
+    if delta_seconds > 0 {
+        credits.push(FocusCredit::Adjustment {
             ts,
-            delta_seconds,
+            seconds: delta_seconds,
         });
+        return;
     }
 
-    Ok(adjustments)
+    // Remove the task's most recent credited time first, including prior manual
+    // additions. Excess legacy deductions are exhausted here, not carried forward.
+    let mut remaining = delta_seconds.unsigned_abs();
+    while remaining > 0 {
+        let Some(credit) = credits.last_mut() else {
+            break;
+        };
+        let deduction = remaining.min(credit.seconds() as u64) as i64;
+        match credit {
+            FocusCredit::Interval { end_ts, .. } => *end_ts -= deduction,
+            FocusCredit::Adjustment { seconds, .. } => *seconds -= deduction,
+        }
+        remaining -= deduction as u64;
+        if credit.seconds() == 0 {
+            credits.pop();
+        }
+    }
 }
 
 fn push_interval(
@@ -1779,63 +1822,10 @@ fn completed_session_durations(
 }
 
 fn task_total_focus_seconds(conn: &Connection, task_id: &str, until_ts: i64) -> AppResult<i64> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT event_type, ts, payload
-             FROM time_events
-             WHERE task_id = ?1
-               AND event_type IN ('start', 'resume', 'pause', 'stop', 'adjust')
-               AND ts <= ?2
-             ORDER BY ts ASC, id ASC",
-        )
-        .map_err(to_error)?;
-
-    let rows = stmt
-        .query_map(params![task_id, until_ts], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })
-        .map_err(to_error)?;
-
-    let mut running_since: Option<i64> = None;
-    let mut pending_adjustment = 0i64;
-    let mut total_focus_seconds = 0i64;
-
-    for row in rows {
-        let (event_type, ts, payload) = row.map_err(to_error)?;
-        match event_type.as_str() {
-            EVENT_START | EVENT_RESUME => {
-                if running_since.is_none() {
-                    running_since = Some(ts);
-                    pending_adjustment = 0;
-                }
-            }
-            EVENT_PAUSE | EVENT_STOP => {
-                if let Some(start) = running_since.take() {
-                    total_focus_seconds += (ts - start + pending_adjustment).max(0);
-                    pending_adjustment = 0;
-                }
-            }
-            EVENT_ADJUST => {
-                let delta_seconds = parse_adjustment_delta(payload.as_deref());
-                if running_since.is_some() {
-                    pending_adjustment += delta_seconds;
-                } else {
-                    total_focus_seconds = (total_focus_seconds + delta_seconds).max(0);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(start) = running_since {
-        total_focus_seconds += (until_ts - start + pending_adjustment).max(0);
-    }
-
-    Ok(total_focus_seconds.max(0))
+    Ok(replay_exclusive_seconds(conn, None, until_ts)?
+        .get(task_id)
+        .copied()
+        .unwrap_or(0))
 }
 
 fn parse_adjustment_delta(payload: Option<&str>) -> i64 {
@@ -2064,8 +2054,14 @@ fn earliest_focus_event_ts(conn: &Connection) -> AppResult<Option<i64>> {
     conn.query_row(
         "SELECT MIN(ts)
          FROM time_events
-         WHERE event_type IN (?1, ?2, ?3, ?4)",
-        params![EVENT_START, EVENT_RESUME, EVENT_PAUSE, EVENT_STOP],
+         WHERE event_type IN (?1, ?2, ?3, ?4, ?5)",
+        params![
+            EVENT_START,
+            EVENT_RESUME,
+            EVENT_PAUSE,
+            EVENT_STOP,
+            EVENT_ADJUST
+        ],
         |row| row.get(0),
     )
     .optional()
@@ -2129,6 +2125,10 @@ fn local_date_key(ts: i64) -> String {
         .map(|date_time| date_time.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| ts.to_string())
 }
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod tests;
 
 fn validation_error(message: impl Into<String>) -> AppError {
     AppError::validation(message)
